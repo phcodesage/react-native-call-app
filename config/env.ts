@@ -58,6 +58,8 @@ export const getSocketUrl = (): string => {
 };
 
 export const getWebRTCConfig = () => ({
+  apiBaseUrl: ENV.API_BASE_URL,
+  // Fallback ICE servers (will be overridden by dynamic servers from backend)
   iceServers: [
     { urls: ENV.STUN_SERVER_URL },
     ...(ENV.TURN_SERVER_URL ? [{
@@ -67,5 +69,11 @@ export const getWebRTCConfig = () => ({
     }] : []),
   ],
 });
+
+export const initializeWebRTC = async () => {
+  const { WebRTCManager } = await import('../services/WebRTCManager');
+  console.log('initializeWebRTC: Using API base URL:', ENV.API_BASE_URL);
+  return WebRTCManager.initialize({ apiBaseUrl: ENV.API_BASE_URL });
+};
 
 export default ENV;

@@ -95,6 +95,7 @@ export default function ChatScreen() {
   const socketRef = useRef<Socket | null>(null);
   const webRTCServiceRef = useRef<WebRTCService | null>(null);
   const callTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const pendingOfferRef = useRef<any>(null);
 
   // Helper function to safely render text
   const safeText = (text: any): string => {
@@ -170,27 +171,18 @@ export default function ChatScreen() {
     socket.on('signal', async (data: any) => {
       console.log('Received WebRTC signal:', data);
       
-      if (!webRTCServiceRef.current) {
-        initializeWebRTC();
-      }
-
       const { signal, from } = data;
 
       try {
         switch (signal.type) {
           case 'offer':
-            handleIncomingCall(data);
-            // Store the offer for when user accepts
-            if (webRTCServiceRef.current) {
-              const answer = await webRTCServiceRef.current.createAnswer(signal);
-              if (socketRef.current && roomId) {
-                socketRef.current.emit('signal', {
-                  room: roomId,
-                  signal: { type: 'answer', sdp: answer.sdp },
-                  from: user?.username
-                });
-              }
+            // Initialize WebRTC only for offers
+            if (!webRTCServiceRef.current) {
+              await initializeWebRTC();
             }
+            // Store the offer and show incoming call UI
+            pendingOfferRef.current = signal;
+            handleIncomingCall(data);
             break;
 
           case 'answer':
@@ -200,8 +192,12 @@ export default function ChatScreen() {
             break;
 
           case 'ice-candidate':
-            if (webRTCServiceRef.current) {
+          default:
+            // Handle ICE candidates only if WebRTC is already initialized
+            if (webRTCServiceRef.current && signal.candidate) {
               await webRTCServiceRef.current.addIceCandidate(signal);
+            } else if (signal.candidate) {
+              console.log('Ignoring ICE candidate - WebRTC not initialized yet');
             }
             break;
 
@@ -312,13 +308,17 @@ export default function ChatScreen() {
   };
 
   // Call handling functions
-  const initializeWebRTC = () => {
-    const iceServers = [
-      { urls: 'stun:stun.l.google.com:19302' },
-      // Add your TURN server here if needed
-    ];
-
-    webRTCServiceRef.current = new WebRTCService({ iceServers });
+  const initializeWebRTC = async () => {
+    try {
+      console.log('Chat: Initializing WebRTC with backend ICE servers');
+      const { initializeWebRTC: initWebRTC } = await import('../../config/env');
+      const webRTCService = await initWebRTC();
+      webRTCServiceRef.current = webRTCService;
+      console.log('Chat: WebRTC initialized successfully');
+    } catch (error) {
+      console.error('Chat: Failed to initialize WebRTC:', error);
+      throw error;
+    }
 
     // Set up event handlers
     webRTCServiceRef.current.onLocalStream = (stream: MediaStream) => {
@@ -377,12 +377,38 @@ export default function ChatScreen() {
     setCallDuration('00:00');
   };
 
-  const handleStartCall = (type: 'audio' | 'video') => {
-    if (!webRTCServiceRef.current) {
-      initializeWebRTC();
+  const handleStartCall = async (type: 'audio' | 'video') => {
+    try {
+      // Check permissions before showing call setup modal
+      const { requestCallPermissions } = await import('../../utils/permissions');
+      const permissionResult = await requestCallPermissions(type === 'video');
+      
+      if (!permissionResult.granted) {
+        Alert.alert(
+          'Permission Required', 
+          permissionResult.message || 'Camera and microphone permissions are required for calls.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Settings', onPress: () => {
+              // Open device settings for permissions
+              import('react-native').then(({ Linking }) => {
+                Linking.openSettings();
+              });
+            }}
+          ]
+        );
+        return;
+      }
+
+      if (!webRTCServiceRef.current) {
+        await initializeWebRTC();
+      }
+      setCallType(type);
+      setShowCallSetup(true);
+    } catch (error) {
+      console.error('Error checking call permissions:', error);
+      Alert.alert('Error', 'Unable to check permissions. Please try again.');
     }
-    setCallType(type);
-    setShowCallSetup(true);
   };
 
   const handleCallSetupStart = async (selectedDevices: CallDevice) => {
@@ -422,7 +448,7 @@ export default function ChatScreen() {
   const handleAcceptCall = async () => {
     try {
       if (!webRTCServiceRef.current) {
-        initializeWebRTC();
+        await initializeWebRTC();
       }
 
       setShowIncomingCall(false);
@@ -431,7 +457,23 @@ export default function ChatScreen() {
       // Initialize call for receiving
       await webRTCServiceRef.current?.initializeCall(incomingCallType);
 
-      // The offer will be handled by the signal listener
+      // Handle the pending offer
+      if (pendingOfferRef.current && webRTCServiceRef.current) {
+        console.log('Processing pending offer:', pendingOfferRef.current);
+        const answer = await webRTCServiceRef.current.createAnswer(pendingOfferRef.current);
+        
+        if (socketRef.current && roomId) {
+          socketRef.current.emit('signal', {
+            room: roomId,
+            signal: { type: 'answer', sdp: answer.sdp },
+            from: user?.username
+          });
+          console.log('Answer sent to remote peer');
+        }
+        
+        // Clear the pending offer
+        pendingOfferRef.current = null;
+      }
     } catch (error) {
       console.error('Error accepting call:', error);
       Alert.alert('Error', 'Failed to accept call. Please try again.');
