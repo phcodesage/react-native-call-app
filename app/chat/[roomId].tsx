@@ -101,10 +101,45 @@ export default function ChatScreen() {
     if (typeof text === 'number') return String(text);
     return String(text).trim();
   };
+  // Safe timestamp parser that accepts number or ISO string
+  const parseTimestampSafe = (value: any): number => {
+    if (typeof value === 'number' && isFinite(value)) return value;
+    if (typeof value === 'string') {
+      const n = Number(value);
+      if (isFinite(n)) return n;
+      const p = Date.parse(value);
+      if (isFinite(p)) return p;
+    }
+    return Date.now();
+  };
+
+  // Send a doorbell/notification and log locally
+  const sendNotification = () => {
+    if (!roomId || !user?.username || !socketRef.current) return;
+    const ts = Date.now();
+    try {
+      socketRef.current.emit('send_notification', { room: roomId, from: user.username, timestamp: ts });
+      // Add local echo: "You sent a notification"
+      const localMsg: Message = {
+        message_id: ts,
+        sender: user.username,
+        content: 'You sent a notification',
+        timestamp: new Date(ts).toISOString(),
+        type: 'text',
+        message_class: 'notification',
+        status: 'sent',
+      };
+      setMessages(prev => [...prev, localMsg]);
+      setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
+    } catch (error) {
+      console.error('Error sending notification:', error);
+    }
+  };
   const isDark = theme === 'dark';
 
   // Extract contact name from roomId (format: "user1-user2")
   const contactName = roomId?.split('-').find(name => name !== user?.username) || 'Unknown';
+  const contactInitial = (contactName?.trim()[0] || 'U').toUpperCase();
 
   useEffect(() => {
     if (roomId && token) {
@@ -151,6 +186,27 @@ export default function ChatScreen() {
     socket.on('receive_chat_message', (data: any) => {
       console.log('Received chat message:', data);
       handleIncomingMessage(data);
+    });
+
+    // Listen for incoming notifications
+    socket.on('receive_notification', (data: any) => {
+      try {
+        const ts = parseTimestampSafe(data?.timestamp);
+        const msgText = `${data?.from || 'Someone'} sent you a notification!`;
+        const newMsg: Message = {
+          message_id: ts,
+          sender: data?.from || 'system',
+          content: msgText,
+          timestamp: new Date(ts).toISOString(),
+          type: 'text',
+          message_class: 'notification',
+          status: 'delivered',
+        };
+        setMessages(prev => [...prev, newMsg]);
+        setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
+      } catch (e) {
+        console.error('Error handling receive_notification:', e);
+      }
     });
 
     socket.on('message_delivered', (data: any) => {
@@ -805,23 +861,29 @@ export default function ChatScreen() {
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: isDark ? '#111827' : '#ffffff' }]} edges={['top', 'left', 'right']}>
       {/* Header */}
-      <View style={[styles.header, { backgroundColor: isDark ? '#1f2937' : '#ffffff' }]}>
+      <View style={[styles.header, { backgroundColor: '#5b2a86' }]}>
         <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-          <Ionicons name="arrow-back" size={24} color={isDark ? '#ffffff' : '#1f2937'} />
+          <Ionicons name="arrow-back" size={24} color="#ffffff" />
         </TouchableOpacity>
-        <ThemedText style={styles.headerTitle}>{contactName}</ThemedText>
+        <View style={styles.headerIdentity}>
+          <View style={styles.avatar}>
+            <Text style={styles.avatarText}>{contactInitial}</Text>
+            <View style={styles.onlineDot} />
+          </View>
+          <ThemedText style={[styles.headerTitle, { color: '#ffffff' }]}>{contactName}</ThemedText>
+        </View>
         <View style={styles.headerActions}>
           <TouchableOpacity 
-            style={styles.headerButton}
+            style={[styles.headerIconPill, { backgroundColor: '#10b981' }]}
             onPress={() => handleStartCall('audio')}
           >
-            <Ionicons name="call" size={20} color={isDark ? '#ffffff' : '#1f2937'} />
+            <Ionicons name="call" size={18} color="#ffffff" />
           </TouchableOpacity>
           <TouchableOpacity 
-            style={styles.headerButton}
+            style={[styles.headerIconPill, { backgroundColor: '#3b82f6' }]}
             onPress={() => handleStartCall('video')}
           >
-            <Ionicons name="videocam" size={20} color={isDark ? '#ffffff' : '#1f2937'} />
+            <Ionicons name="videocam" size={18} color="#ffffff" />
           </TouchableOpacity>
         </View>
       </View>
@@ -829,8 +891,8 @@ export default function ChatScreen() {
       {/* Main Content with Keyboard Avoidance */}
       <KeyboardAvoidingView 
         style={styles.chatContainer}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 100 : 0}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={Platform.select({ ios: 88, android: 88, default: 88 }) as number}
       >
         {/* Messages List */}
         <FlatList
@@ -852,75 +914,6 @@ export default function ChatScreen() {
                 <Text style={styles.typingText}>{text}</Text>
               </View>
             ))}
-          </View>
-        ) : null}
-
-        {/* Chat Actions */}
-        {showActions ? (
-          <View style={[
-            styles.actionsContainer,
-            { backgroundColor: isDark ? '#1f2937' : '#f9fafb' }
-          ]}>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.actionsScrollContent}>
-              <TouchableOpacity 
-                style={[styles.actionButton, { backgroundColor: '#8b5cf6' }]}
-                onPress={() => Alert.alert('Ring Doorbell', 'Doorbell notification sent!')}
-              >
-                <Ionicons name="notifications" size={16} color="white" />
-                <Text style={styles.actionButtonText}>Ring Doorbell</Text>
-              </TouchableOpacity>
-              
-              <TouchableOpacity 
-                style={[styles.actionButton, { backgroundColor: '#a855f7' }]}
-                onPress={() => Alert.alert('Color Picker', 'Color picker feature coming soon!')}
-              >
-                <Ionicons name="color-palette" size={16} color="white" />
-                <Text style={styles.actionButtonText}>Change Color</Text>
-              </TouchableOpacity>
-              
-              <TouchableOpacity 
-                style={[styles.actionButton, { backgroundColor: '#10b981' }]}
-                onPress={() => setShowFileMigrationModal(true)}
-              >
-                <Ionicons name="attach" size={16} color="white" />
-                <Text style={styles.actionButtonText}>Send File</Text>
-              </TouchableOpacity>
-              
-              <TouchableOpacity 
-                style={[styles.actionButton, { backgroundColor: '#3b82f6' }]}
-                onPress={() => Alert.alert('Camera', 'Camera feature coming soon!')}
-              >
-                <Ionicons name="camera" size={16} color="white" />
-                <Text style={styles.actionButtonText}>Camera</Text>
-              </TouchableOpacity>
-              
-              <TouchableOpacity 
-                style={[styles.actionButton, { backgroundColor: isRecording ? '#ef4444' : '#ec4899' }]}
-                onPress={() => {
-                  setIsRecording(!isRecording);
-                  Alert.alert(isRecording ? 'Stop Recording' : 'Start Recording', 
-                    isRecording ? 'Voice recording stopped' : 'Voice recording started');
-                }}
-              >
-                <Ionicons name={isRecording ? "stop" : "mic"} size={16} color="white" />
-                <Text style={styles.actionButtonText}>
-                  {isRecording ? 'Stop Recording' : 'Record Voice'}
-                </Text>
-              </TouchableOpacity>
-              
-              <TouchableOpacity 
-                style={[styles.actionButton, { backgroundColor: '#6366f1' }]}
-                onPress={() => {
-                  setShowTimestamps(!showTimestamps);
-                  Alert.alert('Timestamps', showTimestamps ? 'Timestamps hidden' : 'Timestamps shown');
-                }}
-              >
-                <Ionicons name="time" size={16} color="white" />
-                <Text style={styles.actionButtonText}>
-                  {showTimestamps ? 'Hide Timestamps' : 'Show Timestamps'}
-                </Text>
-              </TouchableOpacity>
-            </ScrollView>
           </View>
         ) : null}
 
@@ -980,6 +973,77 @@ export default function ChatScreen() {
             )}
           </TouchableOpacity>
         </View>
+
+        {/* Chat Actions - toggled grid under input */}
+        {showActions ? (
+          <View style={[
+            styles.actionsContainer,
+            { backgroundColor: isDark ? '#1f2937' : '#f9fafb' }
+          ]}>
+            <View style={styles.actionsGrid}>
+              <TouchableOpacity 
+                style={[styles.actionButton, { backgroundColor: '#8b5cf6' }]}
+                onPress={sendNotification}
+              >
+                <Ionicons name="notifications" size={16} color="white" />
+                <Text style={styles.actionButtonText}>Ring Doorbell</Text>
+              </TouchableOpacity>
+              <TouchableOpacity 
+                style={[styles.actionButton, { backgroundColor: '#a855f7' }]}
+                onPress={() => Alert.alert('Color Picker', 'Color picker feature coming soon!')}
+              >
+                <Ionicons name="color-palette" size={16} color="white" />
+                <Text style={styles.actionButtonText}>Change Color</Text>
+              </TouchableOpacity>
+              <TouchableOpacity 
+                style={[styles.actionButton, { backgroundColor: '#10b981' }]}
+                onPress={() => setShowFileMigrationModal(true)}
+              >
+                <Ionicons name="attach" size={16} color="white" />
+                <Text style={styles.actionButtonText}>Send File</Text>
+              </TouchableOpacity>
+              <TouchableOpacity 
+                style={[styles.actionButton, { backgroundColor: '#3b82f6' }]}
+                onPress={() => Alert.alert('Camera', 'Camera feature coming soon!')}
+              >
+                <Ionicons name="camera" size={16} color="white" />
+                <Text style={styles.actionButtonText}>Camera</Text>
+              </TouchableOpacity>
+              <TouchableOpacity 
+                style={[styles.actionButton, { backgroundColor: isRecording ? '#ef4444' : '#ec4899' }]}
+                onPress={() => {
+                  setIsRecording(!isRecording);
+                  Alert.alert(isRecording ? 'Stop Recording' : 'Start Recording', 
+                    isRecording ? 'Voice recording stopped' : 'Voice recording started');
+                }}
+              >
+                <Ionicons name={isRecording ? "stop" : "mic"} size={16} color="white" />
+                <Text style={styles.actionButtonText}>
+                  {isRecording ? 'Stop Recording' : 'Record Voice Message'}
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity 
+                style={[styles.actionButton, { backgroundColor: '#6366f1' }]}
+                onPress={() => {
+                  setShowTimestamps(!showTimestamps);
+                  Alert.alert('Timestamps', showTimestamps ? 'Timestamps hidden' : 'Timestamps shown');
+                }}
+              >
+                <Ionicons name="time" size={16} color="white" />
+                <Text style={styles.actionButtonText}>
+                  {showTimestamps ? 'Hide Timestamps' : 'Show Timestamps'}
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity 
+                style={[styles.actionButton, { backgroundColor: '#ef4444' }]}
+                onPress={() => Alert.alert('Delete All Messages', 'This will be available soon.')}
+              >
+                <Ionicons name="trash" size={16} color="white" />
+                <Text style={styles.actionButtonText}>Delete All Messages</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        ) : null}
       </KeyboardAvoidingView>
       
       {/* File Migration Modal */}
@@ -1067,6 +1131,11 @@ const styles = StyleSheet.create({
   backButton: {
     marginRight: 12,
   },
+  headerIdentity: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
   headerTitle: {
     flex: 1,
     fontSize: 18,
@@ -1075,6 +1144,38 @@ const styles = StyleSheet.create({
   headerActions: {
     flexDirection: 'row',
     alignItems: 'center',
+  },
+  headerIconPill: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: 10,
+  },
+  avatar: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#7c3aed',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 10,
+  },
+  avatarText: {
+    color: '#ffffff',
+    fontWeight: '700',
+  },
+  onlineDot: {
+    position: 'absolute',
+    right: -2,
+    bottom: -2,
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: '#10b981',
+    borderWidth: 2,
+    borderColor: '#5b2a86',
   },
   headerButton: {
     marginLeft: 16,
@@ -1183,6 +1284,12 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: '#e5e7eb',
   },
+  actionsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
   actionsScrollContent: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1195,6 +1302,10 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     borderRadius: 6,
     gap: 6,
+    // Grid sizing: two columns
+    flexBasis: '48%',
+    justifyContent: 'center',
+    marginBottom: 8,
   },
   actionButtonText: {
     color: 'white',
