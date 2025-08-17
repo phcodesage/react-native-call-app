@@ -377,7 +377,7 @@ export default function HomeScreen() {
     <SafeAreaView style={[
       styles.container,
       { backgroundColor: theme === 'dark' ? '#1f2937' : '#f9fafb' }
-    ]}>
+    ]} edges={['top', 'left', 'right']}>
       {/* Header */}
       <ThemedView style={styles.header}>
         <View style={styles.headerLeft}>

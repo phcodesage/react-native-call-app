@@ -10,6 +10,7 @@ import {
   Vibration,
   View,
 } from 'react-native';
+import { BlurView } from 'expo-blur';
 import { useTheme } from '@/contexts/ThemeContext';
 
 const { width } = Dimensions.get('window');
@@ -94,26 +95,34 @@ export const IncomingCallModal: React.FC<IncomingCallModalProps> = ({
       statusBarTranslucent={true}
     >
       <View style={styles.overlay}>
-        <Animated.View
-          style={[
-            styles.container,
-            {
-              transform: [
-                {
-                  translateY: slideAnim.interpolate({
-                    inputRange: [0, 1],
-                    outputRange: [300, 0],
-                  }),
-                },
-              ],
-            },
-          ]}
-        >
-          {/* Background Gradient */}
-          <View style={[
-            styles.background,
-            { backgroundColor: isDark ? '#1f2937' : '#ffffff' }
-          ]}>
+        <BlurView intensity={30} style={styles.blurOverlay}>
+          <Animated.View
+            style={[
+              styles.container,
+              {
+                transform: [
+                  {
+                    translateY: slideAnim.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [300, 0],
+                    }),
+                  },
+                ],
+              },
+            ]}
+          >
+            {/* Background with enhanced styling */}
+            <View style={[
+              styles.background,
+              { 
+                backgroundColor: isDark ? '#1f2937' : '#ffffff',
+                shadowColor: '#000',
+                shadowOffset: { width: 0, height: 20 },
+                shadowOpacity: 0.3,
+                shadowRadius: 30,
+                elevation: 20,
+              }
+            ]}>
             {/* Header */}
             <View style={styles.header}>
               <Text style={[styles.incomingLabel, { color: isDark ? '#9ca3af' : '#6b7280' }]}>
@@ -222,7 +231,8 @@ export const IncomingCallModal: React.FC<IncomingCallModalProps> = ({
               </TouchableOpacity>
             </View>
           </View>
-        </Animated.View>
+          </Animated.View>
+        </BlurView>
       </View>
     </Modal>
   );
@@ -231,19 +241,25 @@ export const IncomingCallModal: React.FC<IncomingCallModalProps> = ({
 const styles = StyleSheet.create({
   overlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.9)',
     justifyContent: 'flex-end',
+  },
+  blurOverlay: {
+    flex: 1,
+    width: '100%',
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
   },
   container: {
     width: '100%',
   },
   background: {
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    paddingTop: 32,
-    paddingBottom: 40,
-    paddingHorizontal: 24,
-    minHeight: 400,
+    borderTopLeftRadius: 32,
+    borderTopRightRadius: 32,
+    paddingTop: 40,
+    paddingBottom: 48,
+    paddingHorizontal: 32,
+    minHeight: 420,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
   },
   header: {
     flexDirection: 'row',
@@ -265,21 +281,23 @@ const styles = StyleSheet.create({
     marginBottom: 24,
   },
   avatar: {
-    width: 120,
-    height: 120,
-    borderRadius: 60,
+    width: 140,
+    height: 140,
+    borderRadius: 70,
     backgroundColor: '#420796',
     justifyContent: 'center',
     alignItems: 'center',
-    elevation: 8,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
+    elevation: 12,
+    shadowColor: '#420796',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.4,
+    shadowRadius: 16,
+    borderWidth: 4,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
   },
   avatarText: {
-    fontSize: 48,
-    fontWeight: '600',
+    fontSize: 56,
+    fontWeight: '700',
     color: '#ffffff',
   },
   pulseRing: {
@@ -289,26 +307,28 @@ const styles = StyleSheet.create({
     borderRadius: 100,
   },
   pulseRing1: {
-    width: 140,
-    height: 140,
+    width: 160,
+    height: 160,
     top: -10,
     left: -10,
   },
   pulseRing2: {
-    width: 160,
-    height: 160,
+    width: 180,
+    height: 180,
     top: -20,
     left: -20,
   },
   callerName: {
-    fontSize: 28,
-    fontWeight: '600',
-    marginBottom: 4,
+    fontSize: 32,
+    fontWeight: '700',
+    marginBottom: 8,
     textAlign: 'center',
+    letterSpacing: 0.5,
   },
   callTypeLabel: {
-    fontSize: 16,
-    fontWeight: '400',
+    fontSize: 18,
+    fontWeight: '500',
+    opacity: 0.8,
   },
   actions: {
     flexDirection: 'row',
@@ -318,23 +338,27 @@ const styles = StyleSheet.create({
     paddingHorizontal: 40,
   },
   actionButton: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
+    width: 80,
+    height: 80,
+    borderRadius: 40,
     justifyContent: 'center',
     alignItems: 'center',
-    elevation: 6,
+    elevation: 8,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.3,
-    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.4,
+    shadowRadius: 12,
+    borderWidth: 3,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
   },
   declineButton: {
     backgroundColor: '#ef4444',
     transform: [{ rotate: '135deg' }],
+    shadowColor: '#ef4444',
   },
   acceptButton: {
     backgroundColor: '#10b981',
+    shadowColor: '#10b981',
   },
   quickActions: {
     flexDirection: 'row',

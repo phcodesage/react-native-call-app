@@ -2,15 +2,21 @@ import { Ionicons } from '@expo/vector-icons';
 import React, { useEffect, useRef, useState } from 'react';
 import {
     Alert,
+    Animated,
     Dimensions,
+    FlatList,
+    KeyboardAvoidingView,
+    Platform,
     SafeAreaView,
     StatusBar,
     StyleSheet,
     Text,
+    TextInput,
     TouchableOpacity,
     useColorScheme,
     View,
 } from 'react-native';
+import { GestureHandlerRootView, PanGestureHandler, State } from 'react-native-gesture-handler';
 import { MediaStream, RTCView } from 'react-native-webrtc';
 
 // RTCView props interface for proper typing
@@ -24,6 +30,14 @@ interface RTCViewProps {
 
 const { width, height } = Dimensions.get('window');
 
+interface ChatMessage {
+  id: string;
+  text: string;
+  timestamp: Date;
+  isOwn: boolean;
+  senderName: string;
+}
+
 interface CallScreenProps {
   localStream: MediaStream | null;
   remoteStream: MediaStream | null;
@@ -32,11 +46,14 @@ interface CallScreenProps {
   isVideoMuted: boolean;
   callDuration: string;
   recipientName: string;
+  roomId?: string;
   onEndCall: () => void;
   onToggleMute: () => void;
   onToggleVideo: () => void;
   onSwitchCamera: () => void;
   onToggleSpeaker?: () => void;
+  onSendMessage?: (message: string) => void;
+  messages?: ChatMessage[];
 }
 
 export const CallScreen: React.FC<CallScreenProps> = ({
@@ -47,17 +64,24 @@ export const CallScreen: React.FC<CallScreenProps> = ({
   isVideoMuted,
   callDuration,
   recipientName,
+  roomId,
   onEndCall,
   onToggleMute,
   onToggleVideo,
   onSwitchCamera,
   onToggleSpeaker,
+  onSendMessage,
+  messages = [],
 }) => {
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
   const [isLocalVideoLarge, setIsLocalVideoLarge] = useState(false);
   const [controlsVisible, setControlsVisible] = useState(true);
+  const [chatVisible, setChatVisible] = useState(false);
+  const [messageText, setMessageText] = useState('');
+  const [localVideoPosition] = useState(new Animated.ValueXY({ x: width - 140, y: 80 }));
   const controlsTimeoutRef = useRef<NodeJS.Timeout | undefined>(undefined);
+  const flatListRef = useRef<FlatList>(null);
 
   const hasVideo = (localStream?.getVideoTracks().length ?? 0) > 0 || (remoteStream?.getVideoTracks().length ?? 0) > 0;
 
@@ -103,21 +127,69 @@ export const CallScreen: React.FC<CallScreenProps> = ({
     );
   };
 
+  const onGestureEvent = Animated.event(
+    [{ nativeEvent: { translationX: localVideoPosition.x, translationY: localVideoPosition.y } }],
+    { useNativeDriver: false }
+  );
+
+  const onHandlerStateChange = (event: any) => {
+    if (event.nativeEvent.oldState === State.ACTIVE) {
+      // Snap to edges
+      const { translationX, translationY } = event.nativeEvent;
+      const newX = translationX < width / 2 ? 20 : width - 140;
+      const newY = Math.max(80, Math.min(height - 200, translationY));
+      
+      Animated.spring(localVideoPosition, {
+        toValue: { x: newX, y: newY },
+        useNativeDriver: false,
+      }).start();
+    }
+  };
+
+  const sendMessage = () => {
+    if (messageText.trim() && onSendMessage) {
+      onSendMessage(messageText.trim());
+      setMessageText('');
+    }
+  };
+
+  const renderChatMessage = ({ item }: { item: ChatMessage }) => (
+    <View style={[
+      styles.messageContainer,
+      item.isOwn ? styles.ownMessage : styles.otherMessage
+    ]}>
+      <Text style={[
+        styles.messageText,
+        { color: item.isOwn ? '#ffffff' : '#000000' }
+      ]}>
+        {item.text}
+      </Text>
+      <Text style={[
+        styles.messageTime,
+        { color: item.isOwn ? 'rgba(255,255,255,0.7)' : 'rgba(0,0,0,0.5)' }
+      ]}>
+        {item.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+      </Text>
+    </View>
+  );
+
   const renderVideoCall = () => (
-    <View style={styles.videoContainer}>
-      {/* Remote Video (Main) */}
+    <GestureHandlerRootView style={styles.videoContainer}>
+      {/* Remote Video (Main) - Centered with aspect ratio */}
       <TouchableOpacity
         style={styles.remoteVideoContainer as any}
         onPress={showControls}
         activeOpacity={1}
       >
         {remoteStream ? (
-          React.createElement(RTCView as any, {
-            streamURL: remoteStream.toURL(),
-            style: styles.remoteVideo,
-            objectFit: "cover",
-            zOrder: 0,
-          })
+          <View style={styles.remoteVideoWrapper}>
+            {React.createElement(RTCView as any, {
+              streamURL: remoteStream.toURL(),
+              style: styles.remoteVideo,
+              objectFit: "contain", // Changed from "cover" to "contain" to maintain aspect ratio
+              zOrder: 0,
+            })}
+          </View>
         ) : (
           <View style={[styles.remoteVideo as any, styles.videoPlaceholder as any]}>
             <View style={styles.avatarLarge as any}>
@@ -132,25 +204,86 @@ export const CallScreen: React.FC<CallScreenProps> = ({
         )}
       </TouchableOpacity>
 
-      {/* Local Video (Picture-in-Picture) */}
+      {/* Draggable Local Video (Picture-in-Picture) */}
       {localStream && !isVideoMuted && (
-        <TouchableOpacity
-          style={[
-            styles.localVideoContainer as any,
-            isLocalVideoLarge && (styles.localVideoLarge as any)
-          ]}
-          onPress={() => setIsLocalVideoLarge(!isLocalVideoLarge)}
+        <PanGestureHandler
+          onGestureEvent={onGestureEvent}
+          onHandlerStateChange={onHandlerStateChange}
         >
-          {React.createElement(RTCView as any, {
-            streamURL: localStream.toURL(),
-            style: styles.localVideo,
-            objectFit: "cover",
-            mirror: true,
-            zOrder: 1,
-          })}
-        </TouchableOpacity>
+          <Animated.View
+            style={[
+              styles.localVideoContainer,
+              {
+                transform: [
+                  { translateX: localVideoPosition.x },
+                  { translateY: localVideoPosition.y },
+                ],
+              },
+              isLocalVideoLarge && styles.localVideoLarge
+            ]}
+          >
+            <TouchableOpacity
+              onPress={() => setIsLocalVideoLarge(!isLocalVideoLarge)}
+              style={{ flex: 1 }}
+            >
+              {React.createElement(RTCView as any, {
+                streamURL: localStream.toURL(),
+                style: styles.localVideo,
+                objectFit: "cover",
+                mirror: true,
+                zOrder: 1,
+              })}
+            </TouchableOpacity>
+          </Animated.View>
+        </PanGestureHandler>
       )}
-    </View>
+
+      {/* Chat Overlay */}
+      {chatVisible && (
+        <View style={styles.chatOverlay}>
+          <View style={styles.chatHeader}>
+            <Text style={styles.chatTitle}>Chat</Text>
+            <TouchableOpacity onPress={() => setChatVisible(false)}>
+              <Ionicons name="close" size={24} color="#ffffff" />
+            </TouchableOpacity>
+          </View>
+          
+          <FlatList
+            ref={flatListRef}
+            data={messages}
+            renderItem={renderChatMessage}
+            keyExtractor={(item) => item.id}
+            style={styles.chatMessages}
+            onContentSizeChange={() => flatListRef.current?.scrollToEnd()}
+          />
+          
+          <KeyboardAvoidingView 
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            style={styles.chatInputContainer}
+          >
+            <TextInput
+              style={styles.chatInput}
+              value={messageText}
+              onChangeText={setMessageText}
+              placeholder="Type a message..."
+              placeholderTextColor="#9ca3af"
+              multiline
+              maxLength={500}
+            />
+            <TouchableOpacity
+              style={[
+                styles.sendButton,
+                { opacity: messageText.trim() ? 1 : 0.5 }
+              ]}
+              onPress={sendMessage}
+              disabled={!messageText.trim()}
+            >
+              <Ionicons name="send" size={20} color="#ffffff" />
+            </TouchableOpacity>
+          </KeyboardAvoidingView>
+        </View>
+      )}
+    </GestureHandlerRootView>
   );
 
   const renderAudioCall = () => (
@@ -202,6 +335,28 @@ export const CallScreen: React.FC<CallScreenProps> = ({
       {controlsVisible && (
         <View style={styles.controls as any}>
           <View style={styles.controlRow as any}>
+            {/* Chat Button */}
+            {hasVideo && onSendMessage && (
+              <TouchableOpacity
+                style={[
+                  styles.controlButton as any,
+                  chatVisible && (styles.controlButtonActive as any)
+                ]}
+                onPress={() => setChatVisible(!chatVisible)}
+              >
+                <Ionicons
+                  name="chatbubble"
+                  size={24}
+                  color={chatVisible ? '#10b981' : '#ffffff'}
+                />
+                {messages.length > 0 && (
+                  <View style={styles.chatBadge}>
+                    <Text style={styles.chatBadgeText}>{messages.length}</Text>
+                  </View>
+                )}
+              </TouchableOpacity>
+            )}
+
             {/* Mute Button */}
             <TouchableOpacity
               style={[
@@ -278,15 +433,22 @@ const styles = StyleSheet.create({
   },
   remoteVideoContainer: {
     flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  remoteVideoWrapper: {
+    width: '100%',
+    height: '100%',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   remoteVideo: {
-    flex: 1,
+    width: '100%',
+    height: '100%',
     backgroundColor: '#000',
   },
   localVideoContainer: {
     position: 'absolute',
-    top: 60,
-    right: 20,
     width: 120,
     height: 160,
     borderRadius: 12,
@@ -298,6 +460,7 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.25,
     shadowRadius: 4,
+    zIndex: 10,
   },
   localVideoLarge: {
     top: 60,
@@ -445,5 +608,101 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     transform: [{ rotate: '135deg' }],
+  },
+  chatOverlay: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    width: width * 0.8,
+    height: '100%',
+    backgroundColor: 'rgba(0, 0, 0, 0.9)',
+    borderLeftWidth: 1,
+    borderLeftColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  chatHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 16,
+    paddingTop: 60,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  chatTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#ffffff',
+  },
+  chatMessages: {
+    flex: 1,
+    padding: 16,
+  },
+  messageContainer: {
+    marginBottom: 12,
+    maxWidth: '80%',
+  },
+  ownMessage: {
+    alignSelf: 'flex-end',
+    backgroundColor: '#420796',
+    borderRadius: 16,
+    borderBottomRightRadius: 4,
+    padding: 12,
+  },
+  otherMessage: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
+    borderBottomLeftRadius: 4,
+    padding: 12,
+  },
+  messageText: {
+    fontSize: 16,
+    lineHeight: 20,
+  },
+  messageTime: {
+    fontSize: 12,
+    marginTop: 4,
+  },
+  chatInputContainer: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    padding: 16,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255, 255, 255, 0.1)',
+    gap: 12,
+  },
+  chatInput: {
+    flex: 1,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    borderRadius: 20,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    color: '#ffffff',
+    fontSize: 16,
+    maxHeight: 100,
+  },
+  sendButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#420796',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  chatBadge: {
+    position: 'absolute',
+    top: -4,
+    right: -4,
+    backgroundColor: '#ef4444',
+    borderRadius: 10,
+    minWidth: 20,
+    height: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  chatBadgeText: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '600',
   },
 });

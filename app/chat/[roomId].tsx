@@ -1,6 +1,5 @@
 import { CallScreen } from '@/components/CallScreen';
 import { CallSetupModal } from '@/components/CallSetupModal';
-import { CameraTestModal } from '@/components/CameraTestModal';
 import { IncomingCallModal } from '@/components/IncomingCallModal';
 import { ThemedText } from '@/components/ThemedText';
 import { ThemedView } from '@/components/ThemedView';
@@ -18,7 +17,6 @@ import {
   KeyboardAvoidingView,
   Modal,
   Platform,
-  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
@@ -26,7 +24,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MediaStream } from 'react-native-webrtc';
 import io, { Socket } from 'socket.io-client';
 import { ENV, getApiUrl, getSocketUrl } from '../../config/env';
@@ -80,7 +78,6 @@ export default function ChatScreen() {
   const [showCallSetup, setShowCallSetup] = useState(false);
   const [showIncomingCall, setShowIncomingCall] = useState(false);
   const [showCallScreen, setShowCallScreen] = useState(false);
-  const [showCameraTest, setShowCameraTest] = useState(false);
   const [callType, setCallType] = useState<'audio' | 'video'>('audio');
   const [incomingCallType, setIncomingCallType] = useState<'audio' | 'video'>('audio');
   const [incomingCaller, setIncomingCaller] = useState('');
@@ -176,13 +173,12 @@ export default function ChatScreen() {
       try {
         switch (signal.type) {
           case 'offer':
-            // Initialize WebRTC only for offers
-            if (!webRTCServiceRef.current) {
-              await initializeWebRTC();
-            }
-            // Store the offer and show incoming call UI
-            pendingOfferRef.current = signal;
-            handleIncomingCall(data);
+            console.log('Received offer from', from, 'signal:', signal);
+            pendingOfferRef.current = new RTCSessionDescription({
+              type: signal.type,
+              sdp: signal.sdp
+            });
+            await handleIncomingCall({ from, signal });
             break;
 
           case 'answer':
@@ -439,23 +435,59 @@ export default function ChatScreen() {
     }
   };
 
-  const handleIncomingCall = (data: any) => {
+  const handleIncomingCall = async (data: any) => {
+    console.log('Handling incoming call:', data);
     setIncomingCaller(data.from);
-    setIncomingCallType(data.signal.callType || 'audio');
+    
+    // Detect call type from SDP if not explicitly provided
+    let detectedCallType: 'audio' | 'video' = 'audio';
+    if (data.signal.callType) {
+      detectedCallType = data.signal.callType;
+    } else if (data.signal.sdp) {
+      // Check if SDP contains video media
+      const hasVideo = data.signal.sdp.includes('m=video');
+      detectedCallType = hasVideo ? 'video' : 'audio';
+      console.log('Detected call type from SDP:', detectedCallType, 'hasVideo:', hasVideo);
+    }
+    
+    setIncomingCallType(detectedCallType);
+    setCallType(detectedCallType); // Also set the main call type
+    
+    // Initialize WebRTC service immediately to be ready for ICE candidates
+    try {
+      if (!webRTCServiceRef.current) {
+        await initializeWebRTC();
+      }
+      
+      // Initialize the call to create peer connection
+      if (webRTCServiceRef.current) {
+        await webRTCServiceRef.current.initializeCall(detectedCallType);
+      }
+      console.log('WebRTC initialized for incoming call');
+    } catch (error) {
+      console.error('Error initializing WebRTC for incoming call:', error);
+    }
+    
     setShowIncomingCall(true);
   };
 
   const handleAcceptCall = async () => {
     try {
+      // WebRTC should already be initialized from handleIncomingCall
       if (!webRTCServiceRef.current) {
+        console.warn('WebRTC not initialized, initializing now...');
         await initializeWebRTC();
+      }
+      
+      // Ensure WebRTC is initialized before proceeding
+      if (webRTCServiceRef.current) {
+        await webRTCServiceRef.current.initializeCall(incomingCallType);
+      } else {
+        throw new Error('Failed to initialize WebRTC service');
       }
 
       setShowIncomingCall(false);
       setShowCallScreen(true);
-
-      // Initialize call for receiving
-      await webRTCServiceRef.current?.initializeCall(incomingCallType);
 
       // Handle the pending offer
       if (pendingOfferRef.current && webRTCServiceRef.current) {
@@ -771,7 +803,7 @@ export default function ChatScreen() {
   }
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: isDark ? '#111827' : '#ffffff' }]}>
+    <SafeAreaView style={[styles.container, { backgroundColor: isDark ? '#111827' : '#ffffff' }]} edges={['top', 'left', 'right']}>
       {/* Header */}
       <View style={[styles.header, { backgroundColor: isDark ? '#1f2937' : '#ffffff' }]}>
         <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
@@ -779,12 +811,6 @@ export default function ChatScreen() {
         </TouchableOpacity>
         <ThemedText style={styles.headerTitle}>{contactName}</ThemedText>
         <View style={styles.headerActions}>
-          <TouchableOpacity 
-            style={styles.headerButton}
-            onPress={() => setShowCameraTest(true)}
-          >
-            <Ionicons name="camera-outline" size={20} color={isDark ? '#ffffff' : '#1f2937'} />
-          </TouchableOpacity>
           <TouchableOpacity 
             style={styles.headerButton}
             onPress={() => handleStartCall('audio')}
@@ -1004,12 +1030,6 @@ export default function ChatScreen() {
         onDecline={handleDeclineCall}
       />
 
-      {/* Camera Test Modal */}
-      <CameraTestModal
-        visible={showCameraTest}
-        onClose={() => setShowCameraTest(false)}
-      />
-
       {/* Call Screen */}
       {showCallScreen && (
         <Modal visible={true} animationType="slide">
@@ -1043,7 +1063,6 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     borderBottomWidth: 1,
     borderBottomColor: '#e5e7eb',
-    paddingTop: Platform.OS === 'ios' ? 50 : 12,
   },
   backButton: {
     marginRight: 12,

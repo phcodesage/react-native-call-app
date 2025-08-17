@@ -174,7 +174,7 @@ export default function RecentCallsScreen() {
     <SafeAreaView style={[
       styles.container,
       { backgroundColor: isDark ? '#1f2937' : '#f9fafb' }
-    ]}>
+    ]} edges={['top', 'left', 'right']}>
       {/* Header */}
       <ThemedView style={styles.header}>
         <ThemedText type="title" style={styles.headerTitle}>Recent Calls</ThemedText>

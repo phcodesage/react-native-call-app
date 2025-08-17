@@ -121,6 +121,7 @@ export const CallSetupModal: React.FC<CallSetupModalProps> = ({
       const audioOutputs = devices.filter((device: MediaDeviceInfo) => device.kind === 'audiooutput');
       
       console.log('Device counts - Audio inputs:', audioInputs.length, 'Video inputs:', videoInputs.length, 'Audio outputs:', audioOutputs.length);
+      console.log('Video devices found:', videoInputs.map(d => ({ id: d.deviceId, label: d.label })));
       
       setAudioDevices(audioInputs);
       setVideoDevices(videoInputs);
@@ -129,20 +130,39 @@ export const CallSetupModal: React.FC<CallSetupModalProps> = ({
       // Load saved preferences first
       const savedPreferences = await loadDevicePreferences();
       
-      // Set default selections to saved preferences or currently used devices
+      // Set default selections to match currently used devices or saved preferences
       const audioTrack = stream.getAudioTracks()[0];
       const videoTrack = stream.getVideoTracks()[0];
       
       if (audioTrack) {
         const audioSettings = audioTrack.getSettings() as any;
-        const preferredAudioDevice = savedPreferences.audioDeviceId || audioSettings.deviceId || (audioInputs.length > 0 ? audioInputs[0].deviceId : '');
+        const currentAudioDeviceId = audioSettings.deviceId;
+        
+        // Find the actual device being used
+        const currentAudioDevice = audioInputs.find(device => device.deviceId === currentAudioDeviceId);
+        const preferredAudioDevice = currentAudioDevice?.deviceId || savedPreferences.audioDeviceId || (audioInputs.length > 0 ? audioInputs[0].deviceId : '');
         setSelectedAudioDevice(preferredAudioDevice);
       }
       
       if (videoTrack && callType === 'video') {
         const videoSettings = videoTrack.getSettings() as any;
-        const preferredVideoDevice = savedPreferences.videoDeviceId || videoSettings.deviceId || (videoInputs.length > 0 ? videoInputs[0].deviceId : '');
+        const currentVideoDeviceId = videoSettings.deviceId;
+        
+        // Find the actual device being used
+        const currentVideoDevice = videoInputs.find(device => device.deviceId === currentVideoDeviceId);
+        const preferredVideoDevice = currentVideoDevice?.deviceId || savedPreferences.videoDeviceId || (videoInputs.length > 0 ? videoInputs[0].deviceId : '');
         setSelectedVideoDevice(preferredVideoDevice);
+        
+        console.log('Initial video device setup:', {
+          currentVideoDeviceId,
+          currentVideoDevice: currentVideoDevice ? { id: currentVideoDevice.deviceId, label: currentVideoDevice.label } : null,
+          preferredVideoDevice
+        });
+        
+        // Update facing mode based on actual device
+        if (currentVideoDevice) {
+          updateFacingModeFromDevice(currentVideoDevice);
+        }
       }
       
       if (audioOutputs.length > 0) {
@@ -150,10 +170,8 @@ export const CallSetupModal: React.FC<CallSetupModalProps> = ({
         setSelectedSpeakerDevice(preferredSpeakerDevice);
       }
       
-      // Start mic level monitoring for audio calls
-      if (callType === 'audio') {
-        startMicLevelMonitoring(stream);
-      }
+      // Start mic level monitoring for both audio and video calls
+      startMicLevelMonitoring(stream);
       
     } catch (error: any) {
       console.error('Error initializing devices:', error);
@@ -189,12 +207,86 @@ export const CallSetupModal: React.FC<CallSetupModalProps> = ({
     const audioTracks = stream.getAudioTracks();
     if (audioTracks.length > 0) {
       // Simulate mic level for demonstration
-      const interval = setInterval(() => {
-        setMicLevel(Math.random() * 100);
-      }, 100);
+      // In production, you would use a proper audio level detection library
+      let animationFrame: number;
+      let lastLevel = 0;
       
-      return () => clearInterval(interval);
+      const updateMicLevel = () => {
+        // Simulate more realistic mic level changes
+        const targetLevel = Math.random() * 100;
+        const smoothedLevel = lastLevel + (targetLevel - lastLevel) * 0.3;
+        lastLevel = smoothedLevel;
+        setMicLevel(Math.round(smoothedLevel));
+        
+        animationFrame = requestAnimationFrame(updateMicLevel);
+      };
+      
+      updateMicLevel();
+      
+      return () => {
+        if (animationFrame) {
+          cancelAnimationFrame(animationFrame);
+        }
+        setMicLevel(0);
+      };
     }
+  };
+
+  const formatDeviceLabel = (device: MediaDeviceInfo, type: string, index: number): string => {
+    // Special handling for camera devices
+    if (type === 'Camera') {
+      if (device.label) {
+        // Check for front/back camera indicators
+        if (device.label.toLowerCase().includes('front') ||
+            device.label.toLowerCase().includes('user') ||
+            device.label.toLowerCase().includes('facing front')) {
+          return `📷 Back Camera`;
+        }
+        if (device.label.toLowerCase().includes('back') ||
+            device.label.toLowerCase().includes('environment') ||
+            device.label.toLowerCase().includes('rear') ||
+            device.label.toLowerCase().includes('facing back')) {
+          return `📷 Front Camera`;
+        }
+        // For devices that don't specify, use index
+        if (index === 1) {
+          return `📷 Back Camera`;
+        } else if (index === 2) {
+          return `📷 Front Camera`;
+        }
+        // Fallback to original label with camera emoji
+        return `📷 ${device.label}`;
+      }
+      // No label available, use index-based naming
+      if (index === 1) {
+        return `📷 Front Camera`;
+      } else if (index === 2) {
+        return `📷 Back Camera`;
+      }
+      return `📷 Camera ${index}`;
+    }
+    
+    // Handle audio devices
+    if (device.label) {
+      // Check for Bluetooth devices
+      if (device.label.toLowerCase().includes('bluetooth') ||
+          device.label.toLowerCase().includes('airpods') ||
+          device.label.toLowerCase().includes('wireless')) {
+        return `🎧 ${device.label}`;
+      }
+      // Check for wired headphones
+      if (device.label.toLowerCase().includes('headphone') ||
+          device.label.toLowerCase().includes('headset')) {
+        return `🎧 ${device.label}`;
+      }
+      // Check for built-in devices
+      if (device.label.toLowerCase().includes('built-in') ||
+          device.label.toLowerCase().includes('speaker')) {
+        return `🔊 ${device.label}`;
+      }
+      return device.label;
+    }
+    return `${type} ${index}`;
   };
 
   const storeDevicePreferences = async (devices: {
@@ -251,14 +343,51 @@ export const CallSetupModal: React.FC<CallSetupModalProps> = ({
     callStartAnimation.setValue(0);
   };
 
+  const updateFacingModeFromDevice = (device: MediaDeviceInfo) => {
+    const deviceLabel = device.label.toLowerCase();
+    const deviceId = device.deviceId.toLowerCase();
+    
+    console.log('Updating facing mode for device:', { id: device.deviceId, label: device.label });
+    
+    // For devices with numeric IDs, use a different strategy
+    if (device.deviceId === '0' || device.deviceId === '1') {
+      // On most devices, '0' is typically front camera, '1' is back camera
+      // But this can vary, so we'll test with actual stream
+      console.log('Numeric device ID detected, will determine facing mode from stream');
+      return; // Don't set facing mode here, let it be determined by actual testing
+    }
+    
+    // More comprehensive detection logic for labeled devices
+    if (deviceLabel.includes('back') || deviceLabel.includes('environment') || 
+        deviceLabel.includes('rear') || deviceId.includes('back') || 
+        deviceId.includes('environment') || deviceId.includes('rear')) {
+      console.log('Setting facing mode to environment (back)');
+      setCurrentFacingMode('environment');
+    } else if (deviceLabel.includes('front') || deviceLabel.includes('user') || 
+               deviceId.includes('front') || deviceId.includes('user') ||
+               deviceLabel.includes('selfie')) {
+      console.log('Setting facing mode to user (front)');
+      setCurrentFacingMode('user');
+    } else {
+      console.log('Could not determine facing mode from device info');
+    }
+  };
+
   const handleDeviceChange = async (deviceType: 'audio' | 'video', deviceId: string) => {
     try {
       console.log(`Switching ${deviceType} device to:`, deviceId);
       
+      // Update state immediately for UI feedback
       if (deviceType === 'audio') {
         setSelectedAudioDevice(deviceId);
       } else if (deviceType === 'video') {
         setSelectedVideoDevice(deviceId);
+        
+        // Update facing mode based on device selection
+        const device = videoDevices.find(d => d.deviceId === deviceId);
+        if (device) {
+          updateFacingModeFromDevice(device);
+        }
       }
       
       // Update preview stream with new device
@@ -307,11 +436,37 @@ export const CallSetupModal: React.FC<CallSetupModalProps> = ({
         const newStream = await mediaDevices.getUserMedia(constraints);
         console.log('New stream obtained with tracks:', newStream.getTracks().length);
         
+        // Verify the stream is using the correct device
+        if (deviceType === 'video' && newStream.getVideoTracks().length > 0) {
+          const videoTrack = newStream.getVideoTracks()[0];
+          const videoSettings = videoTrack.getSettings() as any;
+          console.log('Video track settings after switch:', videoSettings);
+          
+          // For numeric device IDs, determine facing mode from actual stream capabilities
+          if (deviceId === '0' || deviceId === '1') {
+            // Test which camera is which by trying facingMode constraints
+            // We'll reverse the common assumption since it seems inverted on this device
+            const isFrontCamera = deviceId === '1'; // Reversed: '1' is front, '0' is back
+            setCurrentFacingMode(isFrontCamera ? 'user' : 'environment');
+            console.log(`Set facing mode based on device ID ${deviceId}: ${isFrontCamera ? 'user (front)' : 'environment (back)'}`);
+          }
+          
+          // Ensure the selected device matches what's actually being used
+          if (videoSettings.deviceId && videoSettings.deviceId !== deviceId) {
+            console.warn('Device switch may not have worked as expected');
+            // Update selection to match actual device
+            const actualDevice = videoDevices.find(d => d.deviceId === videoSettings.deviceId);
+            if (actualDevice) {
+              setSelectedVideoDevice(actualDevice.deviceId);
+              updateFacingModeFromDevice(actualDevice);
+            }
+          }
+        }
+        
         setPreviewStream(newStream);
         
-        if (callType === 'audio') {
-          startMicLevelMonitoring(newStream);
-        }
+        // Start mic level monitoring for the new stream
+        startMicLevelMonitoring(newStream);
       }
     } catch (error: any) {
       console.error('Error changing device:', error);
@@ -335,9 +490,39 @@ export const CallSetupModal: React.FC<CallSetupModalProps> = ({
 
       console.log('Switching camera from', currentFacingMode, 'to', currentFacingMode === 'user' ? 'environment' : 'user');
       
-      // Toggle facing mode
-      const newFacingMode = currentFacingMode === 'user' ? 'environment' : 'user';
-      setCurrentFacingMode(newFacingMode);
+      // Find the opposite camera
+      const currentFacing = currentFacingMode;
+      const targetFacing = currentFacing === 'user' ? 'environment' : 'user';
+      
+      // Try to find a specific device for the target facing mode
+      let targetDevice = videoDevices.find(device => {
+        const label = device.label.toLowerCase();
+        const deviceId = device.deviceId.toLowerCase();
+        
+        if (targetFacing === 'environment') {
+          return label.includes('back') || label.includes('environment') || 
+                 label.includes('rear') || deviceId.includes('back') ||
+                 deviceId.includes('environment') || deviceId.includes('rear');
+        } else {
+          return label.includes('front') || label.includes('user') || 
+                 deviceId.includes('front') || deviceId.includes('user') ||
+                 label.includes('selfie');
+        }
+      });
+      
+      // For numeric device IDs, use simple mapping
+      if (!targetDevice && videoDevices.length >= 2) {
+        const currentDeviceId = selectedVideoDevice;
+        // Since we know '1' is front and '0' is back on this device
+        if (targetFacing === 'environment') {
+          // Want back camera (device '0')
+          targetDevice = videoDevices.find(d => d.deviceId === '0');
+        } else {
+          // Want front camera (device '1')
+          targetDevice = videoDevices.find(d => d.deviceId === '1');
+        }
+        console.log(`Switching to ${targetFacing} camera: device ${targetDevice?.deviceId}`);
+      }
 
       // Clean up current stream
       previewStream.getTracks().forEach(track => track.stop());
@@ -352,11 +537,16 @@ export const CallSetupModal: React.FC<CallSetupModalProps> = ({
           noiseSuppression: true,
           autoGainControl: true,
         },
-        video: {
+        video: targetDevice ? {
+          deviceId: { exact: targetDevice.deviceId },
           width: { ideal: 1280, min: 640 },
           height: { ideal: 720, min: 480 },
           frameRate: { ideal: 30, min: 15 },
-          facingMode: newFacingMode,
+        } : {
+          width: { ideal: 1280, min: 640 },
+          height: { ideal: 720, min: 480 },
+          frameRate: { ideal: 30, min: 15 },
+          facingMode: targetFacing,
         },
       };
 
@@ -366,12 +556,26 @@ export const CallSetupModal: React.FC<CallSetupModalProps> = ({
       
       setPreviewStream(newStream);
 
-      // Update selected video device to match new stream
+      // Update selected video device and facing mode to match new stream
       const videoTrack = newStream.getVideoTracks()[0];
       if (videoTrack) {
         const videoSettings = videoTrack.getSettings() as any;
         if (videoSettings.deviceId) {
-          setSelectedVideoDevice(videoSettings.deviceId);
+          const actualDevice = videoDevices.find(d => d.deviceId === videoSettings.deviceId);
+          if (actualDevice) {
+            setSelectedVideoDevice(actualDevice.deviceId);
+            // For numeric IDs, set facing mode based on device ID
+            if (actualDevice.deviceId === '0' || actualDevice.deviceId === '1') {
+              const isFrontCamera = actualDevice.deviceId === '1'; // Reversed: '1' is front, '0' is back
+              setCurrentFacingMode(isFrontCamera ? 'user' : 'environment');
+              console.log(`Camera switched to device ${actualDevice.deviceId}: ${isFrontCamera ? 'user (front)' : 'environment (back)'}`);
+            } else {
+              updateFacingModeFromDevice(actualDevice);
+            }
+          } else {
+            setSelectedVideoDevice(videoSettings.deviceId);
+            setCurrentFacingMode(targetFacing);
+          }
         }
       }
       
@@ -390,7 +594,7 @@ export const CallSetupModal: React.FC<CallSetupModalProps> = ({
       Alert.alert('Camera Switch Error', errorMessage);
       
       // Revert facing mode on error
-      setCurrentFacingMode(currentFacingMode === 'user' ? 'environment' : 'user');
+      setCurrentFacingMode(currentFacingMode);
     }
   };
 
@@ -471,7 +675,7 @@ export const CallSetupModal: React.FC<CallSetupModalProps> = ({
                   : (isDark ? '#f3f4f6' : '#1f2937'),
               }
             ]}>
-              {device.label || `${title} ${devices.indexOf(device) + 1}`}
+              {formatDeviceLabel(device, title, devices.indexOf(device) + 1)}
             </Text>
             {selectedDevice === device.deviceId && (
               <Ionicons name="checkmark-circle" size={20} color="#ffffff" />
@@ -553,13 +757,6 @@ export const CallSetupModal: React.FC<CallSetupModalProps> = ({
                 Calling {recipientName}
               </Text>
             </View>
-            <TouchableOpacity
-              style={styles.closeButton}
-              onPress={onCancel}
-              disabled={isStartingCall}
-            >
-              <Ionicons name="close" size={24} color={isDark ? '#9ca3af' : '#6b7280'} />
-            </TouchableOpacity>
           </View>
 
           {isLoading ? (
@@ -574,9 +771,6 @@ export const CallSetupModal: React.FC<CallSetupModalProps> = ({
               {/* Video Preview */}
               {callType === 'video' && (
                 <View style={styles.previewContainer}>
-                  <Text style={[styles.previewLabel, { color: isDark ? '#9ca3af' : '#6b7280' }]}>
-                    Camera Preview
-                  </Text>
                   <View style={styles.videoPreview}>
                     {previewStream && previewStream.getVideoTracks().length > 0 ? (
                       <>
@@ -584,7 +778,7 @@ export const CallSetupModal: React.FC<CallSetupModalProps> = ({
                           streamURL: previewStream.toURL(),
                           style: styles.previewVideo,
                           objectFit: "cover",
-                          mirror: true,
+                          mirror: currentFacingMode === 'user', // Only mirror front camera
                           zOrder: 0,
                         })}
                         {/* Camera Switch Button */}
@@ -615,22 +809,23 @@ export const CallSetupModal: React.FC<CallSetupModalProps> = ({
                 </View>
               )}
 
-              {/* Audio Level Indicator */}
-              {callType === 'audio' && (
-                <View style={styles.audioLevelContainer}>
-                  <Text style={[styles.previewLabel, { color: isDark ? '#9ca3af' : '#6b7280' }]}>
-                    Microphone Level
-                  </Text>
-                  <View style={styles.micLevelBar}>
-                    <View 
-                      style={[
-                        styles.micLevelFill,
-                        { width: `${micLevel}%` }
-                      ]} 
-                    />
-                  </View>
+              {/* Audio Level Indicator - Show for both audio and video calls */}
+              <View style={styles.audioLevelContainer}>
+                <Text style={[styles.previewLabel, { color: isDark ? '#9ca3af' : '#6b7280' }]}>
+                  Microphone Level
+                </Text>
+                <View style={styles.micLevelBar}>
+                  <View
+                    style={[
+                      styles.micLevelFill,
+                      { width: `${micLevel}%` }
+                    ]}
+                  />
                 </View>
-              )}
+                <Text style={[styles.micLevelText, { color: isDark ? '#9ca3af' : '#6b7280' }]}>
+                  {micLevel > 70 ? 'High' : micLevel > 30 ? 'Good' : micLevel > 5 ? 'Low' : 'Silent'}
+                </Text>
+              </View>
 
               {/* Device Selectors */}
               {renderDeviceSelector(
@@ -649,12 +844,34 @@ export const CallSetupModal: React.FC<CallSetupModalProps> = ({
                 'camera'
               )}
 
-              {renderDeviceSelector(
-                'Speaker',
+              {/* Speaker/Audio Output Selector with Bluetooth support */}
+              {speakerDevices.length > 0 && renderDeviceSelector(
+                'Speaker / Audio Output',
                 speakerDevices,
                 selectedSpeakerDevice,
                 setSelectedSpeakerDevice,
                 'volume-high'
+              )}
+
+              {/* Show message if no speaker devices available */}
+              {speakerDevices.length === 0 && (
+                <View style={styles.deviceSection}>
+                  <View style={styles.deviceHeader}>
+                    <Ionicons
+                      name="volume-high"
+                      size={20}
+                      color={isDark ? '#9ca3af' : '#6b7280'}
+                    />
+                    <Text style={[styles.deviceTitle, { color: isDark ? '#f3f4f6' : '#1f2937' }]}>
+                      Speaker / Audio Output
+                    </Text>
+                  </View>
+                  <View style={[styles.noDeviceContainer, { backgroundColor: isDark ? '#374151' : '#f3f4f6' }]}>
+                    <Text style={[styles.noDeviceText, { color: isDark ? '#9ca3af' : '#6b7280' }]}>
+                      No audio output devices detected. Audio will use default speaker.
+                    </Text>
+                  </View>
+                </View>
               )}
             </ScrollView>
           )}
@@ -712,8 +929,8 @@ const styles = StyleSheet.create({
   },
   header: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
+    justifyContent: 'center',
+    alignItems: 'center',
     padding: 20,
     borderBottomWidth: 1,
     borderBottomColor: 'rgba(0, 0, 0, 0.1)',
@@ -722,6 +939,7 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: '600',
     marginBottom: 4,
+    marginTop: 8,
   },
   subtitle: {
     fontSize: 14,
@@ -802,6 +1020,11 @@ const styles = StyleSheet.create({
     height: '100%',
     backgroundColor: '#10b981',
     borderRadius: 4,
+  },
+  micLevelText: {
+    fontSize: 12,
+    marginTop: 4,
+    textAlign: 'center',
   },
   deviceSection: {
     marginBottom: 24,
@@ -895,6 +1118,15 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     fontSize: 18,
     fontWeight: '600',
+    textAlign: 'center',
+  },
+  noDeviceContainer: {
+    padding: 16,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  noDeviceText: {
+    fontSize: 14,
     textAlign: 'center',
   },
 });
