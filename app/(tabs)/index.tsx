@@ -5,6 +5,7 @@ import { useTheme } from '@/contexts/ThemeContext';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import React, { useEffect, useRef, useState } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { ActivityIndicator, Alert, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { io, Socket } from 'socket.io-client';
@@ -32,6 +33,7 @@ export default function HomeScreen() {
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const socketRef = useRef<Socket | null>(null);
+  const [serverWarning, setServerWarning] = useState<string | null>(null);
 
   // Helper function to safely render text
   const safeText = (text: any): string => {
@@ -42,6 +44,17 @@ export default function HomeScreen() {
   };
 
   useEffect(() => {
+    // Attempt to quickly show cached contacts first
+    (async () => {
+      try {
+        const cached = await AsyncStorage.getItem('contacts_cache');
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          if (Array.isArray(parsed)) setContacts(parsed);
+        }
+      } catch {}
+    })();
+
     fetchContacts();
     initializeSocket();
     
@@ -66,6 +79,9 @@ export default function HomeScreen() {
     socket.on('connect', () => {
       console.log('Socket connected:', socket.id);
       
+      // Clear any previous server warning
+      setServerWarning(null);
+
       // Register user with the socket
       socket.emit('register', {
         username: user.username,
@@ -98,6 +114,7 @@ export default function HomeScreen() {
         type: error.type || 'unknown',
         description: error.description || 'No description available'
       });
+      setServerWarning('Server unreachable. Showing cached contacts.');
     });
 
     socket.on('error', (error) => {
@@ -205,31 +222,24 @@ export default function HomeScreen() {
       });
 
       setContacts(transformedContacts);
+      // Persist cache on success
+      try {
+        await AsyncStorage.setItem('contacts_cache', JSON.stringify(transformedContacts));
+        setServerWarning(null);
+      } catch {}
       console.log('Transformed contacts:', transformedContacts);
       
     } catch (error) {
       console.error('Error fetching contacts:', error);
-      Alert.alert('Error', 'Failed to load contacts. Please check your connection.');
-      
-      // Use fallback mock data
-      setContacts([
-        {
-          id: 'demo1',
-          username: 'Demo User 1',
-          online: false,
-          lastMessage: 'Welcome to the app!',
-          lastMessageTime: '1m',
-          unreadCount: 0
-        },
-        {
-          id: 'demo2',
-          username: 'Demo User 2', 
-          online: false,
-          lastMessage: 'Hello there!',
-          lastMessageTime: '5m',
-          unreadCount: 1
+      // Load cached contacts if available
+      try {
+        const cached = await AsyncStorage.getItem('contacts_cache');
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          if (Array.isArray(parsed)) setContacts(parsed);
         }
-      ]);
+      } catch {}
+      setServerWarning('Server unreachable. Showing cached contacts.');
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
@@ -405,6 +415,14 @@ export default function HomeScreen() {
           </TouchableOpacity>
         </View>
       </ThemedView>
+
+      {/* Server warning banner */}
+      {serverWarning ? (
+        <View style={[styles.warningBanner, { backgroundColor: '#f59e0b20', borderColor: theme === 'dark' ? '#f59e0b' : '#d97706' }]}> 
+          <Ionicons name="alert-circle" size={16} color={theme === 'dark' ? '#f59e0b' : '#b45309'} style={{ marginRight: 6 }} />
+          <Text style={{ color: theme === 'dark' ? '#fbbf24' : '#92400e', fontSize: 12 }}>{serverWarning}</Text>
+        </View>
+      ) : null}
 
       {/* Search Bar */}
       <View style={[
@@ -704,5 +722,16 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     fontSize: 14,
     fontWeight: '600',
+  },
+  warningBanner: {
+    marginHorizontal: 16,
+    marginTop: 8,
+    marginBottom: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
   },
 });

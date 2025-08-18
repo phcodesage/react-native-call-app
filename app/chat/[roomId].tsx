@@ -3,6 +3,8 @@ import { CallSetupModal } from '@/components/CallSetupModal';
 import { IncomingCallModal } from '@/components/IncomingCallModal';
 import { ThemedText } from '@/components/ThemedText';
 import { ThemedView } from '@/components/ThemedView';
+import VoiceRecorder from '@/components/VoiceRecorder';
+import AudioMessage from '@/components/AudioMessage';
 import { useAuth } from '@/contexts/AuthContext';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useColorScheme } from '@/hooks/useColorScheme';
@@ -24,6 +26,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MediaStream } from 'react-native-webrtc';
 import io, { Socket } from 'socket.io-client';
@@ -74,8 +77,8 @@ export default function ChatScreen() {
   const [showActions, setShowActions] = useState(false);
   const [showTimestamps, setShowTimestamps] = useState(false);
   const [showFileMigrationModal, setShowFileMigrationModal] = useState(false);
-  const [isRecording, setIsRecording] = useState(false);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [showVoiceRecorder, setShowVoiceRecorder] = useState(false);
   const [showColorPicker, setShowColorPicker] = useState(false);
   const [selectedColor, setSelectedColor] = useState<string | null>(null);
   const [chatBgColor, setChatBgColor] = useState<string | null>(null);
@@ -84,6 +87,7 @@ export default function ChatScreen() {
   const [rgbR, setRgbR] = useState<string>('');
   const [rgbG, setRgbG] = useState<string>('');
   const [rgbB, setRgbB] = useState<string>('');
+  const [serverWarning, setServerWarning] = useState<string | null>(null);
   
   // Helpers: hex <-> rgb
   const clamp255 = (n: number) => Math.max(0, Math.min(255, Math.round(n)));
@@ -268,6 +272,17 @@ export default function ChatScreen() {
     };
   }, [roomId, token]);
 
+  // Persist messages to cache whenever they change
+  useEffect(() => {
+    const persist = async () => {
+      if (!roomId) return;
+      try {
+        await AsyncStorage.setItem(`messages_cache_${roomId}`, JSON.stringify(messages));
+      } catch {}
+    };
+    if (messages && messages.length >= 0) persist();
+  }, [messages, roomId]);
+
   const initializeSocket = () => {
     if (!token || !user || !roomId) return;
 
@@ -327,6 +342,7 @@ export default function ChatScreen() {
 
     socket.on('connect', () => {
       console.log('Chat socket connected:', socket.id);
+      setServerWarning(null);
       
       // Register user with the socket
       socket.emit('register', {
@@ -380,6 +396,12 @@ export default function ChatScreen() {
       handleTypingIndicator(data);
     });
 
+    // Listen for incoming audio messages
+    socket.on('audio_message', (data: any) => {
+      console.log('Received audio message:', data);
+      handleIncomingAudioMessage(data);
+    });
+
     // Listen for WebRTC signals
     socket.on('signal', async (data: any) => {
       console.log('Received WebRTC signal:', data);
@@ -429,7 +451,23 @@ export default function ChatScreen() {
 
     socket.on('connect_error', (error: any) => {
       console.error('Chat socket connection error:', error);
+      setServerWarning('Server unreachable. Showing cached messages.');
     });
+  };
+
+  const handleIncomingAudioMessage = (data: any) => {
+    const newMessage: Message = {
+      message_id: data.message_id,
+      sender: data.from,
+      message: '', // Audio messages don't have text content
+      timestamp: data.timestamp ? new Date(data.timestamp).toISOString() : new Date().toISOString(),
+      type: 'audio',
+      file_url: data.blob, // The base64 data URL from server
+      audio_data: data.duration ? data.duration.toString() : '30', // Duration in seconds
+      status: data.status || 'sent'
+    };
+
+    setMessages(prev => [...prev, newMessage]);
   };
 
   const handleIncomingMessage = (data: any) => {
@@ -803,7 +841,15 @@ export default function ChatScreen() {
     
     try {
       setIsLoading(true);
-      
+      // Try to show cached messages immediately
+      try {
+        const cached = await AsyncStorage.getItem(`messages_cache_${roomId}`);
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          if (Array.isArray(parsed)) setMessages(parsed);
+        }
+      } catch {}
+
       const response = await fetch(`${API_BASE_URL}/messages/${roomId}`, {
         method: 'GET',
         headers: {
@@ -820,6 +866,10 @@ export default function ChatScreen() {
       console.log('Fetched messages:', messagesData);
       
       setMessages(messagesData);
+      try {
+        await AsyncStorage.setItem(`messages_cache_${roomId}`, JSON.stringify(messagesData));
+        setServerWarning(null);
+      } catch {}
       
       // Scroll to bottom after loading messages
       setTimeout(() => {
@@ -828,7 +878,15 @@ export default function ChatScreen() {
       
     } catch (error) {
       console.error('Error loading messages:', error);
-      Alert.alert('Error', 'Failed to load messages');
+      // Load cached messages if available
+      try {
+        const cached = await AsyncStorage.getItem(`messages_cache_${roomId}`);
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          if (Array.isArray(parsed)) setMessages(parsed);
+        }
+      } catch {}
+      setServerWarning('Server unreachable. Showing cached messages.');
     } finally {
       setIsLoading(false);
     }
@@ -851,27 +909,48 @@ export default function ChatScreen() {
         typingTimeoutRef.current = null;
       }
       
-      // Send empty typing indicator to stop showing typing
-      socketRef.current.emit('live_typing', {
-        room: roomId,
-        from: user?.username,
-        text: ''
-      });
-      
-      // Send message via WebSocket
-      socketRef.current.emit('send_chat_message', {
+      // Send message via socket
+      socketRef.current.emit('message', {
         room: roomId,
         message: messageToSend,
-        from: user?.username
+        sender: user?.username || 'Anonymous',
+        timestamp: new Date().toISOString()
       });
-      
-      console.log('Message sent via WebSocket');
       
     } catch (error) {
       console.error('Error sending message:', error);
       Alert.alert('Error', 'Failed to send message');
+      setNewMessage(messageToSend);
     } finally {
       setIsSending(false);
+    }
+  };
+
+  const handleVoiceRecording = async (uri: string, duration: number) => {
+    if (!socketRef.current || !roomId) return;
+    
+    try {
+      // Read the audio file and convert to base64
+      const response = await fetch(uri);
+      const blob = await response.blob();
+      const reader = new FileReader();
+      
+      reader.onloadend = () => {
+        const base64data = reader.result as string;
+        
+        // Send audio message with correct field names for server
+        socketRef.current?.emit('audio_message', {
+          room: roomId,
+          from: user?.username || 'Anonymous',
+          blob: base64data, // This will be a data URL like "data:audio/webm;base64,..."
+          timestamp: Date.now()
+        });
+      };
+      
+      reader.readAsDataURL(blob);
+    } catch (error) {
+      console.error('Error sending audio message:', error);
+      Alert.alert('Error', 'Failed to send voice message');
     }
   };
 
@@ -889,6 +968,21 @@ export default function ChatScreen() {
     if (diffDays < 7) return `${diffDays}d`;
     
     return date.toLocaleDateString();
+  };
+
+  // Full, local timestamp (e.g., "Aug 19, 2025, 1:36 AM").
+  // Uses parseTimestampSafe to handle ISO strings, numbers, or strings with sub-second precision.
+  const formatFullTimestamp = (value: any) => {
+    const ms = parseTimestampSafe(value);
+    const dt = new Date(ms);
+    return dt.toLocaleString(undefined, {
+      year: 'numeric',
+      month: 'short',
+      day: '2-digit',
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+    });
   };
 
   const renderMessage = ({ item }: { item: Message }) => {
@@ -923,28 +1017,16 @@ export default function ChatScreen() {
         )}
         
         {item.type === 'audio' ? (
-          <View style={[
-            styles.messageBubble,
-            {
-              backgroundColor: isOutgoing 
-                ? '#420796' 
-                : '#3944bc'
-            }
-          ]}>
-            <View style={styles.audioMessage}>
-              <Ionicons 
-                name="musical-notes" 
-                size={20} 
-                color="#e5e7eb" 
-              />
-              <Text style={[
-                styles.audioText,
-                { color: '#e5e7eb' }
-              ]}>
-                Audio message
-              </Text>
-            </View>
-          </View>
+          <AudioMessage
+            uri={item.file_url || ''}
+            duration={item.audio_data ? parseInt(item.audio_data) : 30}
+            isOutgoing={isOutgoing}
+            timestamp={new Date(item.timestamp).getTime()}
+            onReaction={(emoji) => {
+              // Handle reaction if needed
+              console.log('Reaction:', emoji, 'for message:', item.message_id);
+            }}
+          />
         ) : item.file_url ? (
           <View style={[
             styles.messageBubble,
@@ -986,15 +1068,19 @@ export default function ChatScreen() {
           </View>
         )}
         
-        <Text style={[
-          styles.timestamp,
-          { 
-            color: isDark ? '#6b7280' : '#9ca3af',
-            alignSelf: isOutgoing ? 'flex-end' : 'flex-start'
-          }
-        ]}>
-          {formatTimestamp(item.timestamp)}
-        </Text>
+        {showTimestamps ? (
+          <Text
+            style={[
+              styles.timestamp,
+              {
+                color: '#ec4899',
+                alignSelf: isOutgoing ? 'flex-end' : 'flex-start',
+              },
+            ]}
+          >
+            {formatFullTimestamp(item.timestamp)}
+          </Text>
+        ) : null}
       </View>
     );
   };
@@ -1048,6 +1134,19 @@ export default function ChatScreen() {
         </View>
       </View>
 
+      {/* Server warning banner */}
+      {serverWarning ? (
+        <View
+          style={[
+            styles.warningBanner,
+            { borderColor: isDark ? '#f59e0b' : '#d97706', backgroundColor: '#f59e0b20' }
+          ]}
+        >
+          <Ionicons name="alert-circle" size={16} color={isDark ? '#f59e0b' : '#b45309'} style={{ marginRight: 6 }} />
+          <Text style={{ color: isDark ? '#fbbf24' : '#92400e', fontSize: 12 }}>{serverWarning}</Text>
+        </View>
+      ) : null}
+
       {/* Main Content with Keyboard Avoidance */}
       <KeyboardAvoidingView 
         style={styles.chatContainer}
@@ -1062,6 +1161,7 @@ export default function ChatScreen() {
           keyExtractor={(item) => item.message_id.toString()}
           style={[styles.messagesList, chatBgColor ? { backgroundColor: chatBgColor } : null]}
           contentContainerStyle={styles.messagesContent}
+          extraData={showTimestamps}
           onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: true })}
         />
         
@@ -1274,7 +1374,7 @@ export default function ChatScreen() {
         {/* Input Area */}
         <View style={[
           styles.inputContainer, 
-          { 
+          {
             backgroundColor: isDark ? '#1f2937' : '#ffffff',
             paddingBottom: 12
           }
@@ -1286,6 +1386,7 @@ export default function ChatScreen() {
           >
             <Ionicons name="happy" size={20} color={isDark ? '#f3f4f6' : '#374151'} />
           </TouchableOpacity>
+          
           <TextInput
             style={[
               styles.messageInput,
@@ -1359,17 +1460,11 @@ export default function ChatScreen() {
                 <Text style={styles.actionButtonText}>Change Color</Text>
               </TouchableOpacity>
               <TouchableOpacity 
-                style={[styles.actionButton, { backgroundColor: isRecording ? '#ef4444' : '#ec4899' }]}
-                onPress={() => {
-                  setIsRecording(!isRecording);
-                  Alert.alert(isRecording ? 'Stop Recording' : 'Start Recording', 
-                    isRecording ? 'Voice recording stopped' : 'Voice recording started');
-                }}
+                style={[styles.actionButton, { backgroundColor: '#ec4899' }]}
+                onPress={() => setShowVoiceRecorder(true)}
               >
-                <Ionicons name={isRecording ? 'stop' : 'mic'} size={16} color="white" />
-                <Text style={styles.actionButtonText}>
-                  {isRecording ? 'Stop Recording' : 'Record Voice Message'}
-                </Text>
+                <Ionicons name="mic" size={16} color="white" />
+                <Text style={styles.actionButtonText}>Record Voice Message</Text>
               </TouchableOpacity>
               <TouchableOpacity 
                 style={[styles.actionButton, { backgroundColor: '#8b5cf6' }]}
@@ -1465,11 +1560,55 @@ export default function ChatScreen() {
           />
         </Modal>
       )}
+
+      {/* Voice Recorder Modal */}
+      <VoiceRecorder
+        visible={showVoiceRecorder}
+        onClose={() => setShowVoiceRecorder(false)}
+        onSendRecording={handleVoiceRecording}
+      />
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
+  voiceRecorderContainer: {
+    width: '100%',
+    paddingHorizontal: 8,
+    paddingBottom: 8,
+  },
+  audioMessageBubble: {
+    minWidth: 150,
+    maxWidth: 250,
+  },
+  audioMessageContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  audioPlayButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 8,
+  },
+  audioWaveform: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    height: 24,
+    flex: 1,
+  },
+  audioWaveformBar: {
+    width: 3,
+    marginHorizontal: 1,
+    borderRadius: 1.5,
+  },
+  audioDuration: {
+    fontSize: 12,
+    marginLeft: 8,
+  },
   container: {
     flex: 1,
   },
@@ -1962,5 +2101,16 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#ffffff',
     flex: 1,
+  },
+  warningBanner: {
+    marginHorizontal: 12,
+    marginTop: 8,
+    marginBottom: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
   },
 });

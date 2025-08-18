@@ -30,6 +30,7 @@ web-build/
 /android/app/build/
 /android/app/debug/
 /android/app/release/
+.gradle-home/
 
 # iOS
 /ios/build/
