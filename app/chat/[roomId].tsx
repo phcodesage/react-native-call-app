@@ -36,6 +36,8 @@ import { ENV, getApiUrl, getSocketUrl } from '../../config/env';
 import ColorPicker, { Panel1, BrightnessSlider, HueSlider } from 'reanimated-color-picker';
 import { runOnJS } from 'react-native-reanimated';
 import { Audio, InterruptionModeAndroid, InterruptionModeIOS } from 'expo-av';
+import ChangeColorModal from '@/components/change-color/ChangeColorModal';
+import { useChangeColorActions } from '@/components/change-color/useChangeColor';
 
 const API_BASE_URL = ENV.API_BASE_URL;
 const SOCKET_URL = ENV.SOCKET_SERVER_URL;
@@ -70,7 +72,10 @@ export default function ChatScreen() {
   const { theme } = useTheme();
   const { token, user } = useAuth();
   const insets = useSafeAreaInsets();
-  
+  const flatListRef = useRef<FlatList>(null);
+  const socketRef = useRef<Socket | null>(null);
+  const contactName = roomId?.split('-').find(name => name !== user?.username) || 'Unknown';
+  const contactInitial = (contactName?.trim()[0] || 'U').toUpperCase();
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [newMessage, setNewMessage] = useState('');
@@ -93,6 +98,15 @@ export default function ChatScreen() {
   const [serverWarning, setServerWarning] = useState<string | null>(null);
   const [selectedMessageId, setSelectedMessageId] = useState<number | null>(null);
   const notificationSoundRef = useRef<Audio.Sound | null>(null);
+  const { applySelectedColor, resetBgColor } = useChangeColorActions({             // add this
+    socketRef,
+    roomId: roomId as string,
+    user,
+    contactName,
+    setMessages,
+    flatListRef,
+    setChatBgColor,
+  });
   
   // Helpers: hex <-> rgb
   const clamp255 = (n: number) => Math.max(0, Math.min(255, Math.round(n)));
@@ -169,8 +183,7 @@ export default function ChatScreen() {
     };
   }, []);
 
-  const flatListRef = useRef<FlatList>(null);
-  const socketRef = useRef<Socket | null>(null);
+
   
   const callTimerRef = useRef<NodeJS.Timeout | null>(null);
   const pendingOfferRef = useRef<any>(null);
@@ -236,62 +249,7 @@ export default function ChatScreen() {
     return String(text).trim();
   };
 
-  // Color actions
-  const applySelectedColor = () => {
-    if (!selectedColor || !socketRef.current || !roomId || !user?.username) return;
-    const ts = Date.now();
-    try {
-      socketRef.current.emit('send_color', {
-        room: roomId,
-        from: user.username,
-        color: selectedColor,
-        timestamp: ts,
-      });
-      const msgText = `You changed the bg color of ${contactName}`;
-      const localMsg: Message = {
-        message_id: ts,
-        sender: user.username,
-        content: msgText,
-        timestamp: new Date(ts).toISOString(),
-        type: 'text',
-        message_class: 'color',
-        status: 'sent',
-      };
-      setMessages(prev => [...prev, localMsg]);
-      setShowColorPicker(false);
-      setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
-    } catch (e) {
-      console.error('Error applying color:', e);
-    }
-  };
 
-  const resetBgColor = () => {
-    if (!socketRef.current || !roomId || !user?.username) return;
-    const ts = Date.now();
-    try {
-      socketRef.current.emit('reset_bg_color', {
-        room: roomId,
-        from: user.username,
-        timestamp: ts,
-      });
-      setChatBgColor(null);
-      const msgText = 'You reset your bg color';
-      const localMsg: Message = {
-        message_id: ts,
-        sender: user.username,
-        content: msgText,
-        timestamp: new Date(ts).toISOString(),
-        type: 'text',
-        message_class: 'color',
-        status: 'sent',
-      };
-      setMessages(prev => [...prev, localMsg]);
-      setShowColorPicker(false);
-      setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
-    } catch (e) {
-      console.error('Error resetting color:', e);
-    }
-  };
   // Safe timestamp parser that accepts number or ISO string
   const parseTimestampSafe = (value: any): number => {
     if (typeof value === 'number' && isFinite(value)) return value;
@@ -309,8 +267,7 @@ export default function ChatScreen() {
   const isDark = theme === 'dark';
 
   // Extract contact name from roomId (format: "user1-user2")
-  const contactName = roomId?.split('-').find(name => name !== user?.username) || 'Unknown';
-  const contactInitial = (contactName?.trim()[0] || 'U').toUpperCase();
+
 
   useEffect(() => {
     if (roomId && token) {
@@ -435,7 +392,7 @@ export default function ChatScreen() {
           timestamp: new Date(ts).toISOString(),
           type: 'text',
           message_class: 'notification',
-          status: 'delivered',
+          status: 'delivered'
         };
         setMessages(prev => [...prev, newMsg]);
         setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
@@ -944,7 +901,10 @@ export default function ChatScreen() {
 
       {/* Main Content with Keyboard Avoidance */}
       <KeyboardAvoidingView 
-        style={styles.chatContainer}
+        style={[
+          styles.chatContainer,
+          { backgroundColor: chatBgColor ?? (isDark ? '#111827' : '#ffffff') }
+        ]}
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         keyboardVerticalOffset={Platform.OS === 'ios' ? 88 : 0}
       >
@@ -999,171 +959,19 @@ export default function ChatScreen() {
         ) : null}
 
         {/* Color Picker Modal */}
-        <Modal
-          visible={showColorPicker}
-          transparent={true}
-          animationType="fade"
-          onRequestClose={() => { setShowWheel(false); setShowColorPicker(false); setSelectedColor(null); }}
-          >
-          <View style={styles.modalOverlay}>
-            <View style={[
-              styles.colorModalContainer,
-              { backgroundColor: isDark ? '#1f2937' : '#f3f4f6' }
-            ]}>
-              <View style={styles.colorModalHeader}>
-                <Text style={[styles.colorModalTitle, { color: isDark ? '#f3f4f6' : '#111827' }]}>Choose Background Color</Text>
-                <TouchableOpacity onPress={() => { setShowWheel(false); setShowColorPicker(false); }}>
-                  <Ionicons name="close" size={18} color={isDark ? '#f3f4f6' : '#111827'} />
-                </TouchableOpacity>
-              </View>
-              <Text style={[styles.colorModalSubtitle, { color: isDark ? '#d1d5db' : '#6b7280' }]}>
-                {selectedColor ? selectedColor : 'No color selected'}
-              </Text>
-
-              <View style={styles.colorGrid}>
-                {['#FF5733','#33FF57','#3357FF','#F333FF','#FFFF33',
-                  '#33FFFF','#FF33FF','#33FFAA','#AA33FF','#FFAA33']
-                  .map(c => (
-                  <TouchableOpacity
-                    key={c}
-                    style={[
-                      styles.colorSwatchLarge,
-                      { backgroundColor: c, borderColor: isDark ? '#374151' : '#6b7280' },
-                      selectedColor === c && styles.colorSwatchSelected
-                    ]}
-                    onPress={() => setSelectedColor(c)}
-                  />
-                ))}
-              </View>
-
-              {/* Preview box (tap to toggle color wheel) */}
-              <TouchableOpacity
-                activeOpacity={0.8}
-                onPress={() => setShowWheel(prev => !prev)}
-              >
-                <View
-                  style={[
-                    styles.colorPreview,
-                    { backgroundColor: selectedColor || (isDark ? '#111827' : '#000000') , borderColor: isDark ? '#9ca3af' : '#e5e7eb' }
-                  ]}
-                />
-              </TouchableOpacity>
-
-              {showWheel && (
-                <View style={styles.wheelContainer}>
-                  <ColorPicker
-                    style={{ width: '100%' }}
-                    value={selectedColor || '#8b5cf6'}
-                    onChange={(color: any) => {
-                      'worklet';
-                      if (color && color.hex) {
-                        runOnJS(setSelectedColor)(color.hex);
-                      }
-                    }}
-                  >
-                    <Panel1 style={{ width: '100%', height: 200, marginBottom: 12 }} />
-                    <HueSlider style={styles.wheelSlider} thumbShape="pill" />
-                    <BrightnessSlider style={styles.wheelSlider} />
-                  </ColorPicker>
-                </View>
-              )}
-
-              {/* Custom hex input */}
-              <View style={styles.colorHexContainer}>
-                <TextInput
-                  style={[
-                    styles.colorHexInput,
-                    {
-                      color: isDark ? '#f3f4f6' : '#111827',
-                      borderColor: isDark ? '#9ca3af' : '#e5e7eb',
-                      backgroundColor: isDark ? '#111827' : '#000000',
-                    },
-                  ]}
-                  value={selectedColor ?? ''}
-                  placeholder="#000000"
-                  placeholderTextColor={isDark ? '#9ca3af' : '#9ca3af'}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  onChangeText={(t) => {
-                    const v = t.startsWith('#') ? t : `#${t}`;
-                    const valid = /^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$/.test(v);
-                    if (valid) {
-                      setSelectedColor(v);
-                    } else {
-                      // keep raw text without breaking UI; do not apply until valid
-                    }
-                  }}
-                />
-              </View>
-
-              {/* RGB inputs */}
-              <View style={styles.rgbRow}>
-                <View style={styles.rgbBox}>
-                  <Text style={[styles.rgbLabel, { color: isDark ? '#d1d5db' : '#374151' }]}>R</Text>
-                  <TextInput
-                    keyboardType="number-pad"
-                    value={rgbR}
-                    onChangeText={(t) => {
-                      const n = Number(t.replace(/[^0-9]/g, ''));
-                      if (!Number.isNaN(n)) setRgbR(String(Math.min(255, n)));
-                      if (rgbG !== '' && rgbB !== '' && !Number.isNaN(n)) {
-                        setSelectedColor(rgbToHex(n, Number(rgbG), Number(rgbB)));
-                      }
-                    }}
-                    style={[styles.rgbInput, { color: isDark ? '#f3f4f6' : '#111827', borderColor: isDark ? '#9ca3af' : '#e5e7eb', backgroundColor: isDark ? '#111827' : '#000000' }]}
-                    maxLength={3}
-                  />
-                </View>
-                <View style={styles.rgbBox}>
-                  <Text style={[styles.rgbLabel, { color: isDark ? '#d1d5db' : '#374151' }]}>G</Text>
-                  <TextInput
-                    keyboardType="number-pad"
-                    value={rgbG}
-                    onChangeText={(t) => {
-                      const n = Number(t.replace(/[^0-9]/g, ''));
-                      if (!Number.isNaN(n)) setRgbG(String(Math.min(255, n)));
-                      if (rgbR !== '' && rgbB !== '' && !Number.isNaN(n)) {
-                        setSelectedColor(rgbToHex(Number(rgbR), n, Number(rgbB)));
-                      }
-                    }}
-                    style={[styles.rgbInput, { color: isDark ? '#f3f4f6' : '#111827', borderColor: isDark ? '#9ca3af' : '#e5e7eb', backgroundColor: isDark ? '#111827' : '#000000' }]}
-                    maxLength={3}
-                  />
-                </View>
-                <View style={styles.rgbBox}>
-                  <Text style={[styles.rgbLabel, { color: isDark ? '#d1d5db' : '#374151' }]}>B</Text>
-                  <TextInput
-                    keyboardType="number-pad"
-                    value={rgbB}
-                    onChangeText={(t) => {
-                      const n = Number(t.replace(/[^0-9]/g, ''));
-                      if (!Number.isNaN(n)) setRgbB(String(Math.min(255, n)));
-                      if (rgbR !== '' && rgbG !== '' && !Number.isNaN(n)) {
-                        setSelectedColor(rgbToHex(Number(rgbR), Number(rgbG), n));
-                      }
-                    }}
-                    style={[styles.rgbInput, { color: isDark ? '#f3f4f6' : '#111827', borderColor: isDark ? '#9ca3af' : '#e5e7eb', backgroundColor: isDark ? '#111827' : '#000000' }]}
-                    maxLength={3}
-                  />
-                </View>
-              </View>
-
-              {/* Footer buttons */}
-              <View style={styles.colorFooter}>
-                <TouchableOpacity style={[styles.secondaryButton, { backgroundColor: isDark ? '#6b7280' : '#9ca3af' }]} onPress={() => { setShowWheel(false); setShowColorPicker(false); }}>
-                  <Text style={styles.secondaryButtonText}>Cancel</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.primaryButton, { backgroundColor: '#8b5cf6', opacity: selectedColor ? 1 : 0.6 }]}
-                  onPress={applySelectedColor}
-                  disabled={!selectedColor}
-                >
-                  <Text style={styles.primaryButtonText}>Send Color</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          </View>
-        </Modal>
+        <ChangeColorModal
+        visible={showColorPicker}
+        isDark={isDark}
+        initialColor={selectedColor}
+        onClose={() => { setShowWheel(false); setShowColorPicker(false); }}
+        onApply={(color) => {
+          setSelectedColor(color ?? null);
+          applySelectedColor(color ?? null);
+        }}
+        onReset={() => {
+          resetBgColor();
+        }}
+      />
 
         {/* Emoji Picker */}
         {/* Input Area */}
