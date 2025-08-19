@@ -5,10 +5,11 @@ import { ThemedText } from '@/components/ThemedText';
 import { ThemedView } from '@/components/ThemedView';
 import VoiceRecorder from '@/components/VoiceRecorder';
 import AudioMessage from '@/components/AudioMessage';
+import useCallFunctions from '@/components/CallFunction';
+import createSendNotification from '@/components/SendNotification';
 import { useAuth } from '@/contexts/AuthContext';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useColorScheme } from '@/hooks/useColorScheme';
-import { CallDevice, WebRTCService } from '@/services/WebRTCService';
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useRef, useState } from 'react';
@@ -30,9 +31,11 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MediaStream } from 'react-native-webrtc';
 import io, { Socket } from 'socket.io-client';
+import { EmojiPicker } from '@/components/EmojiPicker';
 import { ENV, getApiUrl, getSocketUrl } from '../../config/env';
 import ColorPicker, { Panel1, BrightnessSlider, HueSlider } from 'reanimated-color-picker';
 import { runOnJS } from 'react-native-reanimated';
+import { Audio, InterruptionModeAndroid, InterruptionModeIOS } from 'expo-av';
 
 const API_BASE_URL = ENV.API_BASE_URL;
 const SOCKET_URL = ENV.SOCKET_SERVER_URL;
@@ -55,7 +58,7 @@ interface Message {
   reply_sender?: string;
   reply_to_message_id?: number;
   message_class?: string;
-  reactions?: { [key: string]: string[] };
+  reactions?: { [emoji: string]: string[] }; // e.g. { '❤️': ['user1', 'user2'] }
   status?: string;
   room?: string;
 }
@@ -88,6 +91,8 @@ export default function ChatScreen() {
   const [rgbG, setRgbG] = useState<string>('');
   const [rgbB, setRgbB] = useState<string>('');
   const [serverWarning, setServerWarning] = useState<string | null>(null);
+  const [selectedMessageId, setSelectedMessageId] = useState<number | null>(null);
+  const notificationSoundRef = useRef<Audio.Sound | null>(null);
   
   // Helpers: hex <-> rgb
   const clamp255 = (n: number) => Math.max(0, Math.min(255, Math.round(n)));
@@ -135,25 +140,93 @@ export default function ChatScreen() {
     }
   }, [selectedColor]);
   
-  // Call-related state
-  const [showCallSetup, setShowCallSetup] = useState(false);
-  const [showIncomingCall, setShowIncomingCall] = useState(false);
-  const [showCallScreen, setShowCallScreen] = useState(false);
-  const [callType, setCallType] = useState<'audio' | 'video'>('audio');
-  const [incomingCallType, setIncomingCallType] = useState<'audio' | 'video'>('audio');
-  const [incomingCaller, setIncomingCaller] = useState('');
-  const [localStream, setLocalStream] = useState<MediaStream | null>(null);
-  const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
-  const [isCallConnected, setIsCallConnected] = useState(false);
-  const [isAudioMuted, setIsAudioMuted] = useState(false);
-  const [isVideoMuted, setIsVideoMuted] = useState(false);
-  const [callDuration, setCallDuration] = useState('00:00');
+
+  useEffect(() => {
+    let mounted = true;
   
+    (async () => {
+      await Audio.setAudioModeAsync({
+        playsInSilentModeIOS: true,
+        allowsRecordingIOS: false,
+        staysActiveInBackground: false,
+        interruptionModeIOS: InterruptionModeIOS.DoNotMix,
+        interruptionModeAndroid: InterruptionModeAndroid.DuckOthers,
+        shouldDuckAndroid: true,
+        playThroughEarpieceAndroid: false,
+      });
+  
+      const { sound } = await Audio.Sound.createAsync(
+        require('../../assets/sounds/notif-sound.wav'),
+        { shouldPlay: false, volume: 1.0, isLooping: false }
+      );
+      if (mounted) notificationSoundRef.current = sound;
+    })();
+  
+    return () => {
+      mounted = false;
+      notificationSoundRef.current?.unloadAsync();
+      notificationSoundRef.current = null;
+    };
+  }, []);
+
   const flatListRef = useRef<FlatList>(null);
   const socketRef = useRef<Socket | null>(null);
-  const webRTCServiceRef = useRef<WebRTCService | null>(null);
+  
   const callTimerRef = useRef<NodeJS.Timeout | null>(null);
   const pendingOfferRef = useRef<any>(null);
+
+  // Call state and handlers
+  const {
+    showCallSetup,
+    setShowCallSetup,
+    showIncomingCall,
+    showCallScreen,
+    callType,
+    incomingCallType,
+    incomingCaller,
+    localStream,
+    remoteStream,
+    isCallConnected,
+    isAudioMuted,
+    isVideoMuted,
+    callDuration,
+    webRTCServiceRef,
+    handleStartCall,
+    handleCallSetupStart,
+    handleIncomingCall,
+    handleAcceptCall,
+    handleDeclineCall,
+    handleCallEnd,
+    handleToggleMute,
+    handleToggleVideo,
+    handleSwitchCamera,
+  } = useCallFunctions({
+    socketRef,
+    roomId: roomId as string,
+    user,
+    pendingOfferRef,
+    callTimerRef,
+  });
+
+  // Doorbell/notification sender (decoupled factory)
+  const sendNotification = createSendNotification({
+    socketRef,
+    roomId: roomId as string,
+    user,
+    flatListRef,
+    onLocalEcho: (text: string, ts: number) => {
+      const localMsg: Message = {
+        message_id: ts,
+        sender: user?.username || 'system',
+        content: text,
+        timestamp: new Date(ts).toISOString(),
+        type: 'text',
+        message_class: 'notification',
+        status: 'sent',
+      };
+      setMessages(prev => [...prev, localMsg]);
+    },
+  });
 
   // Helper function to safely render text
   const safeText = (text: any): string => {
@@ -232,27 +305,7 @@ export default function ChatScreen() {
   };
 
   // Send a doorbell/notification and log locally
-  const sendNotification = () => {
-    if (!roomId || !user?.username || !socketRef.current) return;
-    const ts = Date.now();
-    try {
-      socketRef.current.emit('send_notification', { room: roomId, from: user.username, timestamp: ts });
-      // Add local echo: "You sent a notification"
-      const localMsg: Message = {
-        message_id: ts,
-        sender: user.username,
-        content: 'You sent a notification',
-        timestamp: new Date(ts).toISOString(),
-        type: 'text',
-        message_class: 'notification',
-        status: 'sent',
-      };
-      setMessages(prev => [...prev, localMsg]);
-      setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
-    } catch (error) {
-      console.error('Error sending notification:', error);
-    }
-  };
+
   const isDark = theme === 'dark';
 
   // Extract contact name from roomId (format: "user1-user2")
@@ -367,6 +420,12 @@ export default function ChatScreen() {
     // Listen for incoming notifications
     socket.on('receive_notification', (data: any) => {
       try {
+        // play sound
+        void notificationSoundRef.current?.replayAsync().catch((e) => {
+          console.warn('Failed to play notification sound:', e);
+        });
+    
+        // your existing message append
         const ts = parseTimestampSafe(data?.timestamp);
         const msgText = `${data?.from || 'Someone'} sent you a notification!`;
         const newMsg: Message = {
@@ -400,6 +459,11 @@ export default function ChatScreen() {
     socket.on('audio_message', (data: any) => {
       console.log('Received audio message:', data);
       handleIncomingAudioMessage(data);
+    });
+
+    socket.on('receive_reaction', (data: any) => {
+      console.log('Received reaction:', data);
+      handleIncomingReaction(data);
     });
 
     // Listen for WebRTC signals
@@ -481,7 +545,7 @@ export default function ChatScreen() {
       reply_sender: data.reply_sender,
       reply_to_message_id: data.reply_to_message_id,
       status: data.status || 'sent',
-      reactions: {}
+      reactions: data.reactions || {}
     };
     
     setMessages(prevMessages => {
@@ -498,6 +562,26 @@ export default function ChatScreen() {
     setTimeout(() => {
       flatListRef.current?.scrollToEnd({ animated: true });
     }, 100);
+  };
+
+  const handleIncomingReaction = (data: { message_id: number; reactions: { [key: string]: string[] } }) => {
+    setMessages(prev =>
+      prev.map(msg =>
+        msg.message_id === data.message_id ? { ...msg, reactions: data.reactions } : msg
+      )
+    );
+  };
+
+  const handleSendReaction = (messageId: number, emoji: string) => {
+    if (!socketRef.current || !roomId || !user?.username) return;
+
+    socketRef.current.emit('send_reaction', {
+      room: roomId,
+      message_id: messageId,
+      reaction: emoji,
+      from: user.username,
+    });
+    setSelectedMessageId(null); // Close picker
   };
 
   const updateMessageStatus = (messageId: number, status: string) => {
@@ -557,271 +641,6 @@ export default function ChatScreen() {
     }
   };
 
-  // Call handling functions
-  const initializeWebRTC = async () => {
-    try {
-      console.log('Chat: Initializing WebRTC with backend ICE servers');
-      const { initializeWebRTC: initWebRTC } = await import('../../config/env');
-      const webRTCService = await initWebRTC();
-      webRTCServiceRef.current = webRTCService;
-      console.log('Chat: WebRTC initialized successfully');
-    } catch (error) {
-      console.error('Chat: Failed to initialize WebRTC:', error);
-      throw error;
-    }
-
-    // Set up event handlers
-    webRTCServiceRef.current.onLocalStream = (stream: MediaStream) => {
-      setLocalStream(stream);
-    };
-
-    webRTCServiceRef.current.onRemoteStream = (stream: MediaStream) => {
-      setRemoteStream(stream);
-    };
-
-    webRTCServiceRef.current.onCallStateChange = (state: string) => {
-      switch (state) {
-        case 'connected':
-          setIsCallConnected(true);
-          startCallTimer();
-          break;
-        case 'disconnected':
-        case 'failed':
-          handleCallEnd();
-          break;
-      }
-    };
-
-    webRTCServiceRef.current.onIceCandidate = (candidate: any) => {
-      if (socketRef.current && roomId) {
-        socketRef.current.emit('signal', {
-          room: roomId,
-          signal: candidate,
-          from: user?.username
-        });
-      }
-    };
-
-    webRTCServiceRef.current.onCallEnd = () => {
-      handleCallEnd();
-    };
-  };
-
-  const startCallTimer = () => {
-    if (callTimerRef.current) {
-      clearInterval(callTimerRef.current);
-    }
-
-    callTimerRef.current = setInterval(() => {
-      if (webRTCServiceRef.current) {
-        setCallDuration(webRTCServiceRef.current.getCallDuration());
-      }
-    }, 1000) as unknown as NodeJS.Timeout;
-  };
-
-  const stopCallTimer = () => {
-    if (callTimerRef.current) {
-      clearInterval(callTimerRef.current);
-      callTimerRef.current = null;
-    }
-    setCallDuration('00:00');
-  };
-
-  const handleStartCall = async (type: 'audio' | 'video') => {
-    try {
-      // Check permissions before showing call setup modal
-      const { requestCallPermissions } = await import('../../utils/permissions');
-      const permissionResult = await requestCallPermissions(type === 'video');
-      
-      if (!permissionResult.granted) {
-        Alert.alert(
-          'Permission Required', 
-          permissionResult.message || 'Camera and microphone permissions are required for calls.',
-          [
-            { text: 'Cancel', style: 'cancel' },
-            { text: 'Settings', onPress: () => {
-              // Open device settings for permissions
-              import('react-native').then(({ Linking }) => {
-                Linking.openSettings();
-              });
-            }}
-          ]
-        );
-        return;
-      }
-
-      if (!webRTCServiceRef.current) {
-        await initializeWebRTC();
-      }
-      setCallType(type);
-      setShowCallSetup(true);
-    } catch (error) {
-      console.error('Error checking call permissions:', error);
-      Alert.alert('Error', 'Unable to check permissions. Please try again.');
-    }
-  };
-
-  const handleCallSetupStart = async (selectedDevices: CallDevice) => {
-    try {
-      if (!webRTCServiceRef.current) return;
-
-      setShowCallSetup(false);
-      setShowCallScreen(true);
-
-      // Initialize call with selected devices
-      await webRTCServiceRef.current.initializeCall(callType, selectedDevices);
-
-      // Create and send offer
-      const offer = await webRTCServiceRef.current.createOffer();
-      
-      if (socketRef.current && roomId) {
-        socketRef.current.emit('signal', {
-          room: roomId,
-          signal: { type: 'offer', sdp: offer.sdp, callType },
-          from: user?.username
-        });
-      }
-
-    } catch (error) {
-      console.error('Error starting call:', error);
-      Alert.alert('Error', 'Failed to start call. Please try again.');
-      handleCallEnd();
-    }
-  };
-
-  const handleIncomingCall = async (data: any) => {
-    console.log('Handling incoming call:', data);
-    setIncomingCaller(data.from);
-    
-    // Detect call type from SDP if not explicitly provided
-    let detectedCallType: 'audio' | 'video' = 'audio';
-    if (data.signal.callType) {
-      detectedCallType = data.signal.callType;
-    } else if (data.signal.sdp) {
-      // Check if SDP contains video media
-      const hasVideo = data.signal.sdp.includes('m=video');
-      detectedCallType = hasVideo ? 'video' : 'audio';
-      console.log('Detected call type from SDP:', detectedCallType, 'hasVideo:', hasVideo);
-    }
-    
-    setIncomingCallType(detectedCallType);
-    setCallType(detectedCallType); // Also set the main call type
-    
-    // Initialize WebRTC service immediately to be ready for ICE candidates
-    try {
-      if (!webRTCServiceRef.current) {
-        await initializeWebRTC();
-      }
-      
-      // Initialize the call to create peer connection
-      if (webRTCServiceRef.current) {
-        await webRTCServiceRef.current.initializeCall(detectedCallType);
-      }
-      console.log('WebRTC initialized for incoming call');
-    } catch (error) {
-      console.error('Error initializing WebRTC for incoming call:', error);
-    }
-    
-    setShowIncomingCall(true);
-  };
-
-  const handleAcceptCall = async () => {
-    try {
-      // WebRTC should already be initialized from handleIncomingCall
-      if (!webRTCServiceRef.current) {
-        console.warn('WebRTC not initialized, initializing now...');
-        await initializeWebRTC();
-      }
-      
-      // Ensure WebRTC is initialized before proceeding
-      if (webRTCServiceRef.current) {
-        await webRTCServiceRef.current.initializeCall(incomingCallType);
-      } else {
-        throw new Error('Failed to initialize WebRTC service');
-      }
-
-      setShowIncomingCall(false);
-      setShowCallScreen(true);
-
-      // Handle the pending offer
-      if (pendingOfferRef.current && webRTCServiceRef.current) {
-        console.log('Processing pending offer:', pendingOfferRef.current);
-        const answer = await webRTCServiceRef.current.createAnswer(pendingOfferRef.current);
-        
-        if (socketRef.current && roomId) {
-          socketRef.current.emit('signal', {
-            room: roomId,
-            signal: { type: 'answer', sdp: answer.sdp },
-            from: user?.username
-          });
-          console.log('Answer sent to remote peer');
-        }
-        
-        // Clear the pending offer
-        pendingOfferRef.current = null;
-      }
-    } catch (error) {
-      console.error('Error accepting call:', error);
-      Alert.alert('Error', 'Failed to accept call. Please try again.');
-      handleCallEnd();
-    }
-  };
-
-  const handleDeclineCall = () => {
-    setShowIncomingCall(false);
-    
-    if (socketRef.current && roomId) {
-      socketRef.current.emit('signal', {
-        room: roomId,
-        signal: { type: 'call-declined' },
-        from: user?.username
-      });
-    }
-  };
-
-  const handleCallEnd = () => {
-    webRTCServiceRef.current?.endCall();
-    
-    setShowCallScreen(false);
-    setShowCallSetup(false);
-    setShowIncomingCall(false);
-    setLocalStream(null);
-    setRemoteStream(null);
-    setIsCallConnected(false);
-    setIsAudioMuted(false);
-    setIsVideoMuted(false);
-    stopCallTimer();
-
-    if (socketRef.current && roomId) {
-      socketRef.current.emit('signal', {
-        room: roomId,
-        signal: { type: 'call-ended' },
-        from: user?.username
-      });
-    }
-  };
-
-  const handleToggleMute = () => {
-    if (webRTCServiceRef.current) {
-      const muted = webRTCServiceRef.current.toggleMute();
-      setIsAudioMuted(muted);
-    }
-  };
-
-  const handleToggleVideo = () => {
-    if (webRTCServiceRef.current) {
-      const videoOff = webRTCServiceRef.current.toggleVideo();
-      setIsVideoMuted(videoOff);
-    }
-  };
-
-  const handleSwitchCamera = async () => {
-    try {
-      await webRTCServiceRef.current?.switchCamera();
-    } catch (error) {
-      console.error('Error switching camera:', error);
-    }
-  };
 
   const handleKeyPress = (e: any) => {
     // Handle both 'Enter' and newline character for send action
@@ -989,101 +808,77 @@ export default function ChatScreen() {
     const isOutgoing = item.sender === user?.username;
     const messageText = safeText(item.content || item.message || '');
     const senderName = safeText(item.sender);
-    
+    const reactions = item.reactions ? Object.entries(item.reactions) : [];
+
     return (
-      <View style={[
-        styles.messageContainer,
-        isOutgoing ? styles.outgoingMessage : styles.incomingMessage
-      ]}>
-        {!isOutgoing && (
-          <Text style={[styles.senderName, { color: isDark ? '#9ca3af' : '#6b7280' }]}>
-            {senderName}
-          </Text>
-        )}
-        
-        {/* Reply preview */}
-        {item.reply_content && item.reply_sender && (
-          <View style={[
-            styles.replyPreview,
-            { backgroundColor: isDark ? '#7c3aed20' : '#ddd6fe' }
-          ]}>
-            <Text style={[styles.replyAuthor, { color: isDark ? '#a78bfa' : '#7c3aed' }]}>
-              {safeText(item.reply_sender)}
+      <View style={[styles.messageRow, isOutgoing ? styles.myMessageRow : styles.otherMessageRow]}>
+        <View style={isOutgoing ? {} : {flexShrink: 1}}>
+          {!isOutgoing && (
+            <Text style={[styles.senderName, { color: isDark ? '#9ca3af' : '#6b7280' }]}>
+              {senderName}
             </Text>
-            <Text style={[styles.replyText, { color: isDark ? '#e5e7eb' : '#374151' }]} numberOfLines={1}>
-              {safeText(item.reply_content)}
-            </Text>
-          </View>
-        )}
-        
-        {item.type === 'audio' ? (
-          <AudioMessage
-            uri={item.file_url || ''}
-            duration={item.audio_data ? parseInt(item.audio_data) : 30}
-            isOutgoing={isOutgoing}
-            timestamp={new Date(item.timestamp).getTime()}
-            onReaction={(emoji) => {
-              // Handle reaction if needed
-              console.log('Reaction:', emoji, 'for message:', item.message_id);
-            }}
-          />
-        ) : item.file_url ? (
-          <View style={[
-            styles.messageBubble,
-            {
-              backgroundColor: isOutgoing 
-                ? '#420796' 
-                : '#3944bc'
-            }
-          ]}>
-            <View style={styles.fileMessage}>
-              <Ionicons 
-                name="document" 
-                size={20} 
-                color="#e5e7eb" 
-              />
-              <Text style={[
-                styles.fileText,
-                { color: '#e5e7eb' }
-              ]}>
-                {safeText(item.file_name) || 'File'}
+          )}
+
+          {item.reply_content && item.reply_sender && (
+            <View style={[styles.replyPreview, { backgroundColor: isDark ? '#7c3aed20' : '#ddd6fe' }]}>
+              <Text style={[styles.replyAuthor, { color: isDark ? '#a78bfa' : '#7c3aed' }]}>
+                {safeText(item.reply_sender)}
+              </Text>
+              <Text style={[styles.replyText, { color: isDark ? '#e5e7eb' : '#374151' }]} numberOfLines={1}>
+                {safeText(item.reply_content)}
               </Text>
             </View>
+          )}
+
+          <View style={[styles.messageBubble, isOutgoing ? styles.myMessageBubble : styles.otherMessageBubble]}>
+            {item.type === 'audio' ? (
+              <AudioMessage
+                uri={item.file_url || ''}
+                duration={item.audio_data ? parseInt(item.audio_data) : 30}
+                isOutgoing={isOutgoing}
+                timestamp={new Date(item.timestamp).getTime()}
+                onReaction={(emoji) => handleSendReaction(item.message_id, emoji)}
+              />
+            ) : item.file_url ? (
+              <View style={styles.fileMessage}>
+                <Ionicons name="document" size={20} color="#e5e7eb" />
+                <Text style={[styles.fileText, { color: '#e5e7eb' }]}>
+                  {safeText(item.file_name) || 'File'}
+                </Text>
+              </View>
+            ) : (
+              <Text style={[styles.messageText, { color: '#e5e7eb' }]}>
+                {messageText}
+              </Text>
+            )}
+            <Text style={styles.timestamp}>{formatTimestamp(item.timestamp)}</Text>
           </View>
-        ) : (
-          <View style={[
-            styles.messageBubble,
-            {
-              backgroundColor: isOutgoing 
-                ? '#420796' 
-                : '#3944bc'
-            }
-          ]}>
-            <Text style={[
-              styles.messageText,
-              { color: '#e5e7eb' }
-            ]}>
-              {messageText}
+
+          {reactions.length > 0 && (
+            <View style={[styles.reactionsContainer, { alignSelf: isOutgoing ? 'flex-end' : 'flex-start' }]}>
+              {reactions.map(([emoji, users]) => (
+                <View key={emoji} style={styles.reactionBadge}>
+                  <Text>{emoji}</Text>
+                  <Text style={styles.reactionCount}>{users.length}</Text>
+                </View>
+              ))}
+            </View>
+          )}
+
+          {showTimestamps && (
+            <Text style={[styles.timestamp, { color: '#ec4899', alignSelf: isOutgoing ? 'flex-end' : 'flex-start' }]}>
+              {formatFullTimestamp(item.timestamp)}
             </Text>
-          </View>
-        )}
-        
-        {showTimestamps ? (
-          <Text
-            style={[
-              styles.timestamp,
-              {
-                color: '#ec4899',
-                alignSelf: isOutgoing ? 'flex-end' : 'flex-start',
-              },
-            ]}
-          >
-            {formatFullTimestamp(item.timestamp)}
-          </Text>
-        ) : null}
+          )}
+        </View>
+        <TouchableOpacity style={styles.reactionButton} onPress={() => setSelectedMessageId(item.message_id)}>
+          <Ionicons name="happy-outline" size={22} color="#888" />
+        </TouchableOpacity>
       </View>
     );
   };
+
+
 
   if (isLoading) {
     return (
@@ -1157,12 +952,11 @@ export default function ChatScreen() {
         <FlatList
           ref={flatListRef}
           data={messages}
+          keyExtractor={(item, index) => `${item.message_id}-${index}`}
           renderItem={renderMessage}
-          keyExtractor={(item) => item.message_id.toString()}
-          style={[styles.messagesList, chatBgColor ? { backgroundColor: chatBgColor } : null]}
-          contentContainerStyle={styles.messagesContent}
-          extraData={showTimestamps}
-          onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: true })}
+          contentContainerStyle={styles.messagesContainer}
+          ListEmptyComponent={<Text style={styles.emptyText}>No messages yet.</Text>}
+          onEndReachedThreshold={0.5}
         />
         
         {/* Live Typing Indicator - Always visible above input */}
@@ -1371,6 +1165,7 @@ export default function ChatScreen() {
           </View>
         </Modal>
 
+        {/* Emoji Picker */}
         {/* Input Area */}
         <View style={[
           styles.inputContainer, 
@@ -1741,8 +1536,60 @@ const styles = StyleSheet.create({
   },
   timestamp: {
     fontSize: 12,
+    color: '#a1a1aa',
     marginTop: 4,
-    marginHorizontal: 12,
+    alignSelf: 'flex-end',
+  },
+  messageRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    marginVertical: 4,
+    marginHorizontal: 8,
+    maxWidth: '85%',
+  },
+  myMessageRow: {
+    alignSelf: 'flex-end',
+    flexDirection: 'row-reverse',
+  },
+  otherMessageRow: {
+    alignSelf: 'flex-start',
+  },
+  myMessageBubble: {
+    backgroundColor: '#420796',
+  },
+  otherMessageBubble: {
+    backgroundColor: '#3944bc',
+  },
+  reactionsContainer: {
+    flexDirection: 'row',
+    marginTop: 8,
+  },
+  reactionBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    borderRadius: 12,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    marginRight: 4,
+  },
+  reactionCount: {
+    color: '#fff',
+    fontSize: 12,
+    marginLeft: 4,
+  },
+  reactionButton: {
+    padding: 4,
+    marginLeft: 4,
+    marginRight: 4,
+  },
+  messagesContainer: {
+    paddingVertical: 16,
+  },
+  emptyText: {
+    textAlign: 'center',
+    marginTop: 20,
+    color: '#9ca3af',
   },
   replyPreview: {
     marginHorizontal: 12,
@@ -1936,7 +1783,6 @@ const styles = StyleSheet.create({
     height: 34,
     borderRadius: 8,
     borderWidth: 1,
-    marginBottom: 10,
   },
   colorPreview: {
     width: '100%',
