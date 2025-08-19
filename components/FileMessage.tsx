@@ -3,7 +3,6 @@ import {
   View,
   Text,
   TouchableOpacity,
-  Image,
   Modal,
   StyleSheet,
   Dimensions,
@@ -14,7 +13,7 @@ import { Ionicons } from '@expo/vector-icons';
 // Using expo-av for now, will migrate to expo-video in SDK 54
 import { Video, ResizeMode } from 'expo-av';
 import * as FileSystem from 'expo-file-system';
-import * as Sharing from 'expo-sharing';
+import { Image as ExpoImage } from 'expo-image';
 
 interface FileMessageProps {
   file_id?: string;
@@ -73,20 +72,20 @@ export default function FileMessage({
     setIsDownloading(true);
     
     try {
+      console.log('[FileMessage] downloading', { file_url, file_name });
       const downloadUri = FileSystem.documentDirectory + file_name;
       
       const downloadResult = await FileSystem.downloadAsync(file_url, downloadUri);
       
       if (downloadResult.status === 200) {
-        // Check if sharing is available
-        const isAvailable = await Sharing.isAvailableAsync();
-        
-        if (isAvailable) {
-          await Sharing.shareAsync(downloadResult.uri, {
-            mimeType: file_type,
-            dialogTitle: 'Save or Share File',
-          });
-        } else {
+        console.log('[FileMessage] downloaded to', downloadResult.uri);
+        // Try to open the downloaded file with the system if possible; otherwise show the saved path
+        try {
+          const opened = await Linking.openURL(downloadResult.uri);
+          if (!opened) {
+            Alert.alert('Success', `File downloaded to: ${downloadResult.uri}`);
+          }
+        } catch {
           Alert.alert('Success', `File downloaded to: ${downloadResult.uri}`);
         }
       } else {
@@ -114,22 +113,25 @@ export default function FileMessage({
   };
 
   const renderFileContent = (isPreview = false) => {
-    const isImage = file_type?.startsWith('image/');
-    const isVideo = file_type?.startsWith('video/');
-    
+    const isImage = !!file_type && file_type.startsWith('image/');
+    const isVideo = !!file_type && file_type.startsWith('video/');
+    console.log('[FileMessage] render', { isPreview, file_type, file_url: (file_url || '').slice(0, 80) + '...' });
+
     if (isImage && file_url) {
+      console.log('[FileMessage] rendering image', { isPreview });
       return (
         <TouchableOpacity onPress={isPreview ? undefined : openFullScreen}>
-          <Image
+          <ExpoImage
             source={{ uri: file_url }}
             style={isPreview ? styles.fullScreenImage : styles.thumbnailImage}
-            resizeMode={ResizeMode.COVER}
+            contentFit="cover"
           />
         </TouchableOpacity>
       );
     }
     
     if (isVideo && file_url) {
+      console.log('[FileMessage] rendering video', { isPreview });
       return (
         <TouchableOpacity onPress={isPreview ? undefined : openFullScreen}>
           <Video
@@ -143,6 +145,7 @@ export default function FileMessage({
       );
     }
     
+    console.log('[FileMessage] rendering doc icon');
     // For other file types, show icon and name
     return (
       <TouchableOpacity style={styles.documentContainer} onPress={openFullScreen}>

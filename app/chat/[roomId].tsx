@@ -5,6 +5,7 @@ import { ThemedText } from '@/components/ThemedText';
 import { ThemedView } from '@/components/ThemedView';
 import VoiceRecorder from '@/components/voice-recorder/VoiceRecorder';
 import AudioMessage from '@/components/AudioMessage';
+import FileMessage from '@/components/FileMessage';
 import useCallFunctions from '@/components/CallFunction';
 import createSendNotification from '@/components/SendNotification';
 import { useAuth } from '@/contexts/AuthContext';
@@ -32,10 +33,13 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import io, { Socket } from 'socket.io-client';
 import { ENV, getApiUrl, getSocketUrl } from '../../config/env';
-import { Audio, InterruptionModeAndroid, InterruptionModeIOS } from 'expo-av';
+import { Audio, InterruptionModeAndroid, InterruptionModeIOS, Video, ResizeMode } from 'expo-av';
 import ChangeColorModal from '@/components/change-color/ChangeColorModal';
 import { useChangeColorActions } from '@/components/change-color/useChangeColor';
 import { useVoiceRecorderActions } from '@/components/voice-recorder/useVoiceRecorder';
+import * as DocumentPicker from 'expo-document-picker';
+import { FileUploadService } from '@/services/FileUploadService';
+import { Image as ExpoImage } from 'expo-image';
 
 const API_BASE_URL = ENV.API_BASE_URL;
 const SOCKET_URL = ENV.SOCKET_SERVER_URL;
@@ -88,7 +92,7 @@ export default function ChatScreen() {
   const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const [showActions, setShowActions] = useState(false);
   const [showTimestamps, setShowTimestamps] = useState(false);
-  const [showFileMigrationModal, setShowFileMigrationModal] = useState(false);
+  const [showFilePreviewModal, setShowFilePreviewModal] = useState(false);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [showVoiceRecorder, setShowVoiceRecorder] = useState(false);
   const [showColorPicker, setShowColorPicker] = useState(false);
@@ -113,7 +117,13 @@ export default function ChatScreen() {
   // Scrolling state for unread indicator
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [unreadCount, setUnreadCount] = useState(0);
-  const { applySelectedColor, resetBgColor } = useChangeColorActions({             // add this
+  // File picker & upload
+  const [pickedFile, setPickedFile] = useState<{ uri: string; name: string; type: string; size: number } | null>(null);
+  const [isUploadingFile, setIsUploadingFile] = useState(false);
+  const [uploadProgressPct, setUploadProgressPct] = useState<number>(0);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [showPickedFullScreen, setShowPickedFullScreen] = useState(false);
+  const { applySelectedColor, resetBgColor } = useChangeColorActions({ 
     socketRef,
     roomId: roomId as string,
     user,
@@ -952,13 +962,18 @@ export default function ChatScreen() {
                 timestamp={new Date(item.timestamp).getTime()}
                 onReaction={(emoji) => handleSendReaction(item.message_id, emoji)}
               />
-            ) : item.file_url ? (
-              <View style={styles.fileMessage}>
-                <Ionicons name="document" size={20} color="#e5e7eb" />
-                <Text style={[styles.fileText, { color: '#e5e7eb' }]}>
-                  {safeText(item.file_name) || 'File'}
-                </Text>
-              </View>
+            ) : item.type === 'file' ? (
+              <FileMessage
+                file_id={item.file_id}
+                file_name={item.file_name}
+                file_type={item.file_type}
+                file_size={item.file_size}
+                file_url={item.file_url}
+                sender={item.sender}
+                timestamp={item.timestamp}
+                isOutgoing={isOutgoing}
+                isDark={isDark}
+              />
             ) : (
               <Text style={[styles.messageText, { color: '#e5e7eb' }]}>
                 {messageText}
@@ -1020,6 +1035,47 @@ export default function ChatScreen() {
       </ThemedView>
     );
   }
+
+  // Infer MIME type when picker doesn't provide it (Android often returns undefined)
+  const guessMimeType = (name?: string, uri?: string) => {
+    const candidate = name || uri;
+    if (!candidate) return 'application/octet-stream';
+    const last = candidate.split('/').pop() || candidate; // if uri has path segments
+    const ext = last.split('?')[0].split('#')[0].split('.').pop()?.toLowerCase();
+    switch (ext) {
+      case 'jpg':
+      case 'jpeg':
+      case 'png':
+      case 'gif':
+      case 'webp':
+        return `image/${ext === 'jpg' ? 'jpeg' : ext}`;
+      case 'mp4':
+      case 'm4v':
+      case 'mov':
+      case 'webm':
+      case 'mkv':
+      case '3gp':
+        return `video/${ext === 'm4v' ? 'mp4' : ext}`;
+      case 'mp3':
+      case 'm4a':
+      case 'wav':
+        return `audio/${ext === 'm4a' ? 'mp4' : ext}`;
+      case 'pdf':
+        return 'application/pdf';
+      default:
+        return 'application/octet-stream';
+    }
+  };
+
+  const isImageLike = (mime?: string, name?: string, uri?: string) => {
+    const m = mime || guessMimeType(name, uri);
+    return m.startsWith('image/');
+  };
+
+  const isVideoLike = (mime?: string, name?: string, uri?: string) => {
+    const m = mime || guessMimeType(name, uri);
+    return m.startsWith('video/');
+  };
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: isDark ? '#111827' : '#ffffff' }]} edges={['top', 'left', 'right']}>
@@ -1270,6 +1326,45 @@ export default function ChatScreen() {
           ]}>
             <View style={styles.actionsGrid}>
               <TouchableOpacity 
+                style={[styles.actionButton, { backgroundColor: '#0ea5e9' }]}
+                onPress={async () => {
+                  try {
+                    setUploadError(null);
+                    // Expo DocumentPicker API (SDK 53+)
+                    const result = await DocumentPicker.getDocumentAsync({
+                      multiple: false,
+                      copyToCacheDirectory: true,
+                      type: '*/*',
+                    });
+                    const canceled = (result as any).canceled === true || (result as any).type === 'cancel';
+                    if (canceled) return;
+                    const asset = (result as any).assets?.[0] ?? result;
+                    if (!asset?.uri) return;
+                    console.log('[Picker] result asset:', {
+                      uri: asset?.uri,
+                      name: asset?.name,
+                      mimeType: asset?.mimeType,
+                      size: asset?.size,
+                    });
+                    const file = {
+                      uri: asset.uri as string,
+                      name: (asset.name as string) || 'file',
+                      type: (asset.mimeType as string) || guessMimeType(asset.name as string, asset.uri as string),
+                      size: Number(asset.size ?? 0),
+                    };
+                    console.log('[Picker] mapped file:', file);
+                    setPickedFile(file);
+                    setShowFilePreviewModal(true);
+                  } catch (e) {
+                    Alert.alert('Error', 'Failed to open file picker');
+                    console.warn('[Picker] error:', e);
+                  }
+                }}
+              >
+                <Ionicons name="document" size={16} color="white" />
+                <Text style={styles.actionButtonText}>Send File</Text>
+              </TouchableOpacity>
+              <TouchableOpacity 
                 style={[styles.actionButton, { backgroundColor: '#10b981' }]}
                 onPress={sendNotification}
               >
@@ -1318,32 +1413,214 @@ export default function ChatScreen() {
         ) : null}
       </KeyboardAvoidingView>
       
-      {/* File Migration Modal */}
+      {/* File Preview Modal */}
       <Modal
-        visible={showFileMigrationModal}
-        transparent={true}
-        animationType="fade"
-        onRequestClose={() => setShowFileMigrationModal(false)}
+        visible={showFilePreviewModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => {
+          if (!isUploadingFile) {
+            setShowFilePreviewModal(false);
+            setPickedFile(null);
+            setUploadProgressPct(0);
+            setUploadError(null);
+          }
+        }}
       >
         <View style={styles.modalOverlay}>
-          <View style={[
-            styles.modalContent,
-            { backgroundColor: isDark ? '#1f2937' : '#ffffff' }
-          ]}>
-            <Text style={[
-              styles.modalTitle,
-              { color: isDark ? '#f3f4f6' : '#1f2937' }
-            ]}>Feature Migrating</Text>
-            <Text style={[
-              styles.modalText,
-              { color: isDark ? '#d1d5db' : '#6b7280' }
-            ]}>File sending is still under migration.{"\n"}Please check back soon.</Text>
-            <TouchableOpacity
-              style={styles.modalCloseButton}
-              onPress={() => setShowFileMigrationModal(false)}
-            >
-              <Text style={styles.modalCloseButtonText}>Close</Text>
-            </TouchableOpacity>
+          <View style={[styles.modalContent, { backgroundColor: isDark ? '#1f2937' : '#ffffff' }]}>
+            <Text style={[styles.modalTitle, { color: isDark ? '#f3f4f6' : '#1f2937' }]}>Send File</Text>
+            {pickedFile ? (
+              <View style={{ marginTop: 8 }}>
+                <Text style={[styles.modalText, { color: isDark ? '#e5e7eb' : '#374151' }]}>Name: {pickedFile.name}</Text>
+                <Text style={[styles.modalText, { color: isDark ? '#9ca3af' : '#6b7280' }]}>Type: {pickedFile.type}</Text>
+                <Text style={[styles.modalText, { color: isDark ? '#9ca3af' : '#6b7280' }]}>Size: {Math.round((pickedFile.size || 0) / 1024)} KB</Text>
+              </View>
+            ) : null}
+
+            {/* Inline preview for images/videos */}
+            {pickedFile && (
+              (() => {
+                const isImage = isImageLike(pickedFile.type, pickedFile.name, pickedFile.uri);
+                const isVideo = isVideoLike(pickedFile.type, pickedFile.name, pickedFile.uri);
+                if (!isImage && !isVideo) return null;
+                console.log('[Preview] isImage?', isImage, 'isVideo?', isVideo);
+                return (
+                  <View style={{ marginTop: 12 }}>
+                    {isImage ? (
+                      <TouchableOpacity
+                        activeOpacity={0.9}
+                        onPress={() => setShowPickedFullScreen(true)}
+                      >
+                        <ExpoImage
+                          source={{ uri: pickedFile.uri }}
+                          style={{ width: '100%', height: 220, borderRadius: 8 }}
+                          contentFit="cover"
+                        />
+                      </TouchableOpacity>
+                    ) : (
+                      <TouchableOpacity activeOpacity={0.9} onPress={() => setShowPickedFullScreen(true)}>
+                        <Video
+                          source={{ uri: pickedFile.uri }}
+                          style={{ width: '100%', height: 240, borderRadius: 8, backgroundColor: '#000' }}
+                          useNativeControls
+                          resizeMode={ResizeMode.CONTAIN}
+                          shouldPlay={false}
+                          isLooping={false}
+                        />
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                );
+              })()
+            )}
+
+            {uploadError ? (
+              <Text style={[styles.modalText, { color: '#ef4444', marginTop: 8 }]}>{uploadError}</Text>
+            ) : null}
+
+            {isUploadingFile ? (
+              <View style={{ marginTop: 12, alignItems: 'center' }}>
+                <ActivityIndicator size="large" color="#10b981" />
+                <Text style={{ marginTop: 8, color: isDark ? '#e5e7eb' : '#374151' }}>Uploading... {uploadProgressPct}%</Text>
+                <TouchableOpacity
+                  style={[styles.modalCloseButton, { backgroundColor: '#ef4444', marginTop: 12 }]}
+                  onPress={() => {
+                    try { FileUploadService.getInstance().cancelCurrentUpload(); } catch {}
+                    setIsUploadingFile(false);
+                  }}
+                >
+                  <Text style={styles.modalCloseButtonText}>Cancel Upload</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <View style={{ marginTop: 16, flexDirection: 'row', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+                <TouchableOpacity
+                  style={[styles.modalCloseButton, { backgroundColor: '#0ea5e9' }]}
+                  onPress={async () => {
+                    try {
+                      setUploadError(null);
+                      const result = await DocumentPicker.getDocumentAsync({ multiple: false, copyToCacheDirectory: true, type: '*/*' });
+                      const canceled = (result as any).canceled === true || (result as any).type === 'cancel';
+                      if (canceled) return;
+                      const asset = (result as any).assets?.[0] ?? result;
+                      if (!asset?.uri) return;
+                      const file = {
+                        uri: asset.uri as string,
+                        name: (asset.name as string) || 'file',
+                        type: (asset.mimeType as string) || guessMimeType(asset.name as string, asset.uri as string),
+                        size: Number(asset.size ?? 0),
+                      };
+                      setPickedFile(file);
+                    } catch (e) {
+                      Alert.alert('Error', 'Failed to open file picker');
+                    }
+                  }}
+                >
+                  <Text style={styles.modalCloseButtonText}>Change File</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.modalCloseButton, { backgroundColor: '#6b7280' }]}
+                  onPress={() => { setShowFilePreviewModal(false); setPickedFile(null); setUploadError(null); setUploadProgressPct(0); }}
+                >
+                  <Text style={styles.modalCloseButtonText}>Close</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.modalCloseButton, { backgroundColor: '#10b981' }]}
+                  onPress={async () => {
+                    if (!pickedFile || !roomId || !token || !user?.username) return;
+                    console.log('[Upload] starting...', {
+                      roomId,
+                      username: user.username,
+                      file: {
+                        name: pickedFile.name,
+                        type: pickedFile.type,
+                        size: pickedFile.size,
+                        uri: pickedFile.uri?.slice(0, 60) + '...'
+                      }
+                    });
+                    try {
+                      setIsUploadingFile(true);
+                      setUploadError(null);
+                      const uploader = FileUploadService.getInstance();
+                      const result = await uploader.uploadFile(
+                        pickedFile,
+                        roomId as string,
+                        user.username,
+                        token,
+                        (p) => {
+                          setUploadProgressPct(p.percentage);
+                          if (p.percentage % 5 === 0) {
+                            console.log('[Upload] progress:', p);
+                          }
+                        }
+                      );
+                      console.log('[Upload] success:', result);
+                      // Optimistic/local echo for file message
+                      const localTs = Date.now();
+                      const isoTs = new Date(localTs).toISOString();
+                      const fileMsg: Message = {
+                        message_id: localTs,
+                        sender: user.username,
+                        timestamp: isoTs,
+                        type: 'file',
+                        file_id: result.file_id,
+                        file_name: result.file_name,
+                        file_type: result.file_type,
+                        file_size: result.file_size,
+                        file_url: result.file_url,
+                        status: 'sent',
+                      };
+                      setMessages(prev => [...prev, fileMsg]);
+                      setShowFilePreviewModal(false);
+                      setPickedFile(null);
+                      setUploadProgressPct(0);
+                      setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
+                    } catch (e: any) {
+                      const msg = e?.message || 'Failed to upload file';
+                      setUploadError(msg);
+                      console.warn('[Upload] error:', e);
+                    } finally {
+                      setIsUploadingFile(false);
+                    }
+                  }}
+                >
+                  <Text style={styles.modalCloseButtonText}>Send</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+          </View>
+        </View>
+      </Modal>
+
+      {/* Picked file full-screen preview */}
+      <Modal
+        visible={showPickedFullScreen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowPickedFullScreen(false)}
+      >
+        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.92)', justifyContent: 'center' }}>
+          <TouchableOpacity style={{ position: 'absolute', top: 50, right: 20, zIndex: 1 }} onPress={() => setShowPickedFullScreen(false)}>
+            <Ionicons name="close" size={28} color="#fff" />
+          </TouchableOpacity>
+          <View style={{ alignItems: 'center', paddingHorizontal: 16 }}>
+            {pickedFile && isImageLike(pickedFile.type, pickedFile.name, pickedFile.uri) ? (
+              <ExpoImage
+                source={{ uri: pickedFile.uri }}
+                style={{ width: '100%', height: 420, borderRadius: 8 }}
+                contentFit="contain"
+              />
+            ) : pickedFile && isVideoLike(pickedFile.type, pickedFile.name, pickedFile.uri) ? (
+              <Video
+                source={{ uri: pickedFile.uri }}
+                style={{ width: '100%', height: 420, borderRadius: 8, backgroundColor: '#000' }}
+                useNativeControls
+                resizeMode={ResizeMode.CONTAIN}
+                shouldPlay
+                isLooping={false}
+              />
+            ) : null}
           </View>
         </View>
       </Modal>
