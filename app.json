@@ -28,9 +28,18 @@
         "android.permission.MODIFY_AUDIO_SETTINGS",
         "android.permission.INTERNET",
         "android.permission.ACCESS_NETWORK_STATE",
-        "android.permission.WAKE_LOCK"
+        "android.permission.WAKE_LOCK",
+        "android.permission.POST_NOTIFICATIONS"
       ],
-      "package": "com.callapp.mobile"
+      "package": "com.callapp.mobile",
+      "notifications": {
+        "icon": "./assets/images/icon.png",
+        "color": "#ffffff",
+        "defaultChannel": {
+          "name": "default-channel",
+          "importance": "high"
+        }
+      }
     },
     "web": {
       "bundler": "metro",
@@ -39,6 +48,7 @@
     },
     "plugins": [
       "expo-router",
+      "expo-notifications",
       "expo-dev-client",
       [
         "expo-splash-screen",

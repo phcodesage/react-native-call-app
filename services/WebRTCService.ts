@@ -32,6 +32,9 @@ interface ReactNativeRTCPeerConnection extends RTCPeerConnection {
   getSenders: () => any[]; // RTCRtpSender[]
 }
 
+// Local type for SDP-like objects passed from web
+type SessionDescriptionLike = { type: 'offer' | 'answer'; sdp: string };
+
 export interface CallDevice {
   audioDeviceId?: string;
   videoDeviceId?: string;
@@ -268,13 +271,17 @@ export class WebRTCService {
     return sessionDescription;
   }
 
-  async createAnswer(offer: RTCSessionDescription): Promise<RTCSessionDescription> {
+  async createAnswer(offer: RTCSessionDescription | RTCSessionDescriptionInit): Promise<RTCSessionDescription> {
     if (!this.peerConnection) {
       throw new Error('Peer connection not initialized');
     }
 
     console.log('WebRTCService: Setting remote description (offer)');
-    await this.peerConnection.setRemoteDescription(offer);
+    // Normalize to object with required sdp field and cast to satisfy RN types
+    const normalizedOffer: any = (offer as any).sdp
+      ? offer
+      : { type: (offer as any).type, sdp: (offer as any).sdp };
+    await this.peerConnection.setRemoteDescription(normalizedOffer as any);
     this.remoteDescriptionSet = true;
     
     // Process queued ICE candidates after setting remote description
@@ -305,13 +312,16 @@ export class WebRTCService {
     return sessionDescription;
   }
 
-  async handleAnswer(answer: RTCSessionDescription) {
+  async handleAnswer(answer: RTCSessionDescription | RTCSessionDescriptionInit) {
     if (!this.peerConnection) {
       throw new Error('Peer connection not initialized');
     }
 
     console.log('WebRTCService: Setting remote description (answer)');
-    await this.peerConnection.setRemoteDescription(answer);
+    const normalizedAnswer: any = (answer as any).sdp
+      ? answer
+      : { type: (answer as any).type, sdp: (answer as any).sdp };
+    await this.peerConnection.setRemoteDescription(normalizedAnswer as any);
     this.remoteDescriptionSet = true;
     
     // Process queued ICE candidates after setting remote description

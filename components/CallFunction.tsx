@@ -1,8 +1,10 @@
- import { useRef, useState } from 'react';
-import { Alert } from 'react-native';
+ import { useEffect, useRef, useState } from 'react';
+import { Alert, Platform } from 'react-native';
 import type { Socket } from 'socket.io-client';
 import type { MediaStream } from 'react-native-webrtc';
 import type { WebRTCService, CallDevice } from '@/services/WebRTCService';
+import { Audio } from 'expo-av';
+import * as Notifications from 'expo-notifications';
 
 type MaybeUser = { username?: string } | null | undefined;
 
@@ -36,6 +38,113 @@ export function useCallFunctions({
   const [callDuration, setCallDuration] = useState('00:00');
   const webRTCServiceRef = useRef<WebRTCService | null>(null);
 
+  // Sounds for call states (outgoing only)
+  const ringingSoundRef = useRef<Audio.Sound | null>(null);
+  const answerSoundRef = useRef<Audio.Sound | null>(null);
+  const failedSoundRef = useRef<Audio.Sound | null>(null);
+
+  // Android ongoing notification id
+  const notificationIdRef = useRef<string | null>(null);
+
+  // Load/unload sounds
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const [ringing, answer, failed] = await Promise.all([
+          Audio.Sound.createAsync(require('../assets/sounds/ringing(gain-down).mp3'), { shouldPlay: false, isLooping: true, volume: 1.0 }),
+          Audio.Sound.createAsync(require('../assets/sounds/answer.mp3'), { shouldPlay: false, isLooping: false, volume: 1.0 }),
+          Audio.Sound.createAsync(require('../assets/sounds/failed.mp3'), { shouldPlay: false, isLooping: false, volume: 1.0 }),
+        ]);
+        if (!mounted) {
+          ringing.sound.unloadAsync();
+          answer.sound.unloadAsync();
+          failed.sound.unloadAsync();
+          return;
+        }
+        ringingSoundRef.current = ringing.sound;
+        answerSoundRef.current = answer.sound;
+        failedSoundRef.current = failed.sound;
+
+        // Request notifications permission (Android 13+ and iOS)
+        await Notifications.requestPermissionsAsync();
+
+        // Android: ensure a high-importance channel for calls
+        if (Platform.OS === 'android') {
+          await Notifications.setNotificationChannelAsync('calls', {
+            name: 'Calls',
+            importance: Notifications.AndroidImportance.MAX,
+            vibrationPattern: [0, 250, 250, 250],
+            lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+            bypassDnd: true,
+            sound: undefined, // using custom sound via expo-av instead
+            showBadge: false,
+          });
+        }
+      } catch (e) {
+        console.warn('Call sounds load failed:', e);
+      }
+    })();
+    return () => {
+      mounted = false;
+      ringingSoundRef.current?.unloadAsync();
+      answerSoundRef.current?.unloadAsync();
+      failedSoundRef.current?.unloadAsync();
+      ringingSoundRef.current = null;
+      answerSoundRef.current = null;
+      failedSoundRef.current = null;
+
+      if (Platform.OS === 'android' && notificationIdRef.current) {
+        void Notifications.dismissNotificationAsync(notificationIdRef.current);
+        notificationIdRef.current = null;
+      }
+    };
+  }, []);
+
+  const playRinging = async () => {
+    try { await ringingSoundRef.current?.replayAsync(); } catch {}
+  };
+  const stopRinging = async () => {
+    try { await ringingSoundRef.current?.stopAsync(); } catch {}
+  };
+  const playAnswer = async () => {
+    try { await answerSoundRef.current?.replayAsync(); } catch {}
+  };
+  const playFailed = async () => {
+    try { await failedSoundRef.current?.replayAsync(); } catch {}
+  };
+
+  const showOrUpdateCallNotification = async (title: string, body?: string) => {
+    if (Platform.OS !== 'android') return;
+    try {
+      if (notificationIdRef.current) {
+        await Notifications.dismissNotificationAsync(notificationIdRef.current);
+        notificationIdRef.current = null;
+      }
+      notificationIdRef.current = await Notifications.scheduleNotificationAsync({
+        content: {
+          title,
+          body,
+          priority: Notifications.AndroidNotificationPriority.MAX,
+          sticky: true,
+        },
+        trigger: null,
+      });
+    } catch (e) {
+      console.warn('Failed to present call notification:', e);
+    }
+  };
+
+  const dismissCallNotification = async () => {
+    if (Platform.OS !== 'android') return;
+    try {
+      if (notificationIdRef.current) {
+        await Notifications.dismissNotificationAsync(notificationIdRef.current);
+        notificationIdRef.current = null;
+      }
+    } catch {}
+  };
+
   // Call handling functions
   const initializeWebRTC = async () => {
     try {
@@ -65,10 +174,16 @@ export function useCallFunctions({
         case 'connected':
           setIsCallConnected(true);
           startCallTimer();
+          // Stop ringing and play answer when call connects (outgoing)
+          void stopRinging();
+          void playAnswer();
           break;
         case 'disconnected':
         case 'failed':
           handleCallEnd();
+          // On failure/disconnect, stop ringing and play failed tone
+          void stopRinging();
+          void playFailed();
           break;
       }
     };
@@ -150,6 +265,10 @@ export function useCallFunctions({
       setShowCallSetup(false);
       setShowCallScreen(true);
 
+      // Start ringing (outgoing) until connected or failed
+      void playRinging();
+      void showOrUpdateCallNotification('Calling…');
+
       await webRTCServiceRef.current.initializeCall(callType, selectedDevices);
 
       const offer = await webRTCServiceRef.current.createOffer();
@@ -164,6 +283,10 @@ export function useCallFunctions({
     } catch (error) {
       console.error('Error starting call:', error);
       Alert.alert('Error', 'Failed to start call. Please try again.');
+      // Stop ringing and play failed if start failed
+      void stopRinging();
+      void playFailed();
+      void dismissCallNotification();
       handleCallEnd();
     }
   };
@@ -197,6 +320,9 @@ export function useCallFunctions({
     }
 
     setShowIncomingCall(true);
+    // Start ringing and show notification for incoming call
+    void playRinging();
+    void showOrUpdateCallNotification(`Incoming ${detectedCallType} call`, data.from ? `From ${data.from}` : undefined);
   };
 
   const handleAcceptCall = async () => {
@@ -214,6 +340,10 @@ export function useCallFunctions({
       setShowIncomingCall(false);
       setShowCallScreen(true);
 
+      // Stop ringing immediately on accept and update notification
+      void stopRinging();
+      void showOrUpdateCallNotification('Connecting…');
+
       if (pendingOfferRef.current && webRTCServiceRef.current) {
         console.log('Processing pending offer:', pendingOfferRef.current);
         const answer = await webRTCServiceRef.current.createAnswer(pendingOfferRef.current);
@@ -230,12 +360,15 @@ export function useCallFunctions({
     } catch (error) {
       console.error('Error accepting call:', error);
       Alert.alert('Error', 'Failed to accept call. Please try again.');
+      void dismissCallNotification();
       handleCallEnd();
     }
   };
 
   const handleDeclineCall = () => {
     setShowIncomingCall(false);
+    void stopRinging();
+    void dismissCallNotification();
     if (socketRef.current && roomId) {
       socketRef.current.emit('signal', {
         room: roomId,
@@ -257,6 +390,10 @@ export function useCallFunctions({
     setIsAudioMuted(false);
     setIsVideoMuted(false);
     stopCallTimer();
+
+    // Always stop ringing on end
+    void stopRinging();
+    void dismissCallNotification();
 
     if (socketRef.current && roomId) {
       socketRef.current.emit('signal', {
@@ -288,6 +425,14 @@ export function useCallFunctions({
       console.error('Error switching camera:', error);
     }
   };
+
+  // While connected, keep the Android notification updated with duration
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    if (isCallConnected) {
+      void showOrUpdateCallNotification('On call', `Duration ${callDuration}`);
+    }
+  }, [isCallConnected, callDuration]);
 
   return {
     // state

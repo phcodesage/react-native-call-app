@@ -20,6 +20,7 @@ import {
   KeyboardAvoidingView,
   Modal,
   Platform,
+  InteractionManager,
   ScrollView,
   StyleSheet,
   Text,
@@ -72,6 +73,11 @@ export default function ChatScreen() {
   const insets = useSafeAreaInsets();
   const flatListRef = useRef<FlatList>(null);
   const socketRef = useRef<Socket | null>(null);
+  const isInitialLoadRef = useRef<boolean>(true);
+  const isDark = theme === 'dark';
+  // Refs used by call flow (must be declared before useCallFunctions)
+  const callTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const pendingOfferRef = useRef<any>(null);
   const contactName = roomId?.split('-').find(name => name !== user?.username) || 'Unknown';
   const contactInitial = (contactName?.trim()[0] || 'U').toUpperCase();
   const [messages, setMessages] = useState<Message[]>([]);
@@ -199,10 +205,15 @@ export default function ChatScreen() {
     };
   }, []);
 
-
-  
-  const callTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const pendingOfferRef = useRef<any>(null);
+  // Scroll helper
+  const scrollToBottom = (animated: boolean = true) => {
+    // Wait for interactions and layout to settle for more reliable scrolling
+    InteractionManager.runAfterInteractions(() => {
+      requestAnimationFrame(() => {
+        setTimeout(() => flatListRef.current?.scrollToEnd({ animated }), 100);
+      });
+    });
+  };
 
   // Call state and handlers
   const {
@@ -266,29 +277,54 @@ export default function ChatScreen() {
   };
 
 
-  // Safe timestamp parser that accepts number or ISO string
-  const parseTimestampSafe = (value: any): number => {
-    if (typeof value === 'number' && isFinite(value)) return value;
-    if (typeof value === 'string') {
-      const n = Number(value);
-      if (isFinite(n)) return n;
-      const p = Date.parse(value);
-      if (isFinite(p)) return p;
-    }
-    return Date.now();
-  };
+  useEffect(() => {
+    let mounted = true;
+  
+    (async () => {
+      await Audio.setAudioModeAsync({
+        playsInSilentModeIOS: true,
+        allowsRecordingIOS: false,
+        staysActiveInBackground: false,
+        interruptionModeIOS: InterruptionModeIOS.DoNotMix,
+        interruptionModeAndroid: InterruptionModeAndroid.DuckOthers,
+        shouldDuckAndroid: true,
+        playThroughEarpieceAndroid: false,
+      });
+  
+      const { sound } = await Audio.Sound.createAsync(
+        require('../../assets/sounds/notif-sound.wav'),
+        { shouldPlay: false, volume: 1.0, isLooping: false }
+      );
+      if (mounted) notificationSoundRef.current = sound;
 
-  // Send a doorbell/notification and log locally
+      const { sound: msgSound } = await Audio.Sound.createAsync(
+        require('../../assets/sounds/splat2.m4a'),
+        { shouldPlay: false, volume: 1.0, isLooping: false }
+      );
+      if (mounted) messageSoundRef.current = msgSound;
+    })();
+  
+    return () => {
+      mounted = false;
+      notificationSoundRef.current?.unloadAsync();
+      notificationSoundRef.current = null;
+      messageSoundRef.current?.unloadAsync();
+      messageSoundRef.current = null;
+    };
+  }, []);
 
-  const isDark = theme === 'dark';
-
-  // Extract contact name from roomId (format: "user1-user2")
-
+  // WebRTC readiness and pending ICE buffer (to handle early ICE from web)
+  const webrtcReadyRef = useRef<boolean>(false);
+  const pendingIceRef = useRef<any[]>([]);
 
   useEffect(() => {
     if (roomId && token) {
+      // Mark as initial load for this room
+      isInitialLoadRef.current = true;
       loadRoomMessages();
       initializeSocket();
+      // Extra nudge to bottom right after mount
+      setTimeout(() => scrollToBottom(true), 120);
     }
     
     return () => {
@@ -463,10 +499,11 @@ export default function ChatScreen() {
         switch (signal.type) {
           case 'offer':
             console.log('Received offer from', from, 'signal:', signal);
-            pendingOfferRef.current = new RTCSessionDescription({
+            // Store as plain RTCSessionDescriptionInit object (RN may not expose global RTCSessionDescription)
+            pendingOfferRef.current = {
               type: signal.type,
-              sdp: signal.sdp
-            });
+              sdp: signal.sdp,
+            };
             await handleIncomingCall({ from, signal });
             break;
 
@@ -478,11 +515,14 @@ export default function ChatScreen() {
 
           case 'ice-candidate':
           default:
-            // Handle ICE candidates only if WebRTC is already initialized
-            if (webRTCServiceRef.current && signal.candidate) {
-              await webRTCServiceRef.current.addIceCandidate(signal);
-            } else if (signal.candidate) {
-              console.log('Ignoring ICE candidate - WebRTC not initialized yet');
+            // Buffer ICE until WebRTC is ready; then flush
+            if (signal.candidate) {
+              if (webrtcReadyRef.current && webRTCServiceRef.current) {
+                await webRTCServiceRef.current.addIceCandidate(signal);
+              } else {
+                console.log('Buffering ICE candidate - WebRTC not ready yet');
+                pendingIceRef.current.push(signal);
+              }
             }
             break;
 
@@ -655,19 +695,41 @@ export default function ChatScreen() {
 
   const loadRoomMessages = async () => {
     if (!roomId || !token) return;
-    
     try {
       setIsLoading(true);
-      // Try to show cached messages immediately
+
+      // 1) Load cached messages immediately for fast UI
+      let baselineMessages: Message[] = [];
       try {
         const cached = await AsyncStorage.getItem(`messages_cache_${roomId}`);
         if (cached) {
           const parsed = JSON.parse(cached);
-          if (Array.isArray(parsed)) setMessages(parsed);
+          if (Array.isArray(parsed)) {
+            baselineMessages = parsed as Message[];
+            setMessages(parsed);
+            // We can stop showing spinner early since UI has content
+            setIsLoading(false);
+            // On initial open, ensure we land at bottom of cached list
+            if (isInitialLoadRef.current) scrollToBottom(true);
+          }
         }
       } catch {}
 
-      const response = await fetch(`${API_BASE_URL}/messages/${roomId}`, {
+      // 2) Compute incremental cursors from baseline or current state
+      const sourceList = baselineMessages.length ? baselineMessages : messages;
+      const latestTs = getLatestMessageTimestamp(sourceList);
+      const maxId = getMaxMessageId(sourceList);
+
+      // 3) Build URL with optional filters (backend may ignore unknown params)
+      const url = new URL(`${API_BASE_URL}/messages/${roomId}`);
+      if (latestTs) {
+        // Send both iso and ms for flexibility
+        url.searchParams.set('since', new Date(latestTs).toISOString());
+        url.searchParams.set('since_ms', String(latestTs));
+      }
+      if (maxId) url.searchParams.set('after_id', String(maxId));
+
+      const response = await fetch(url.toString(), {
         method: 'GET',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -679,23 +741,36 @@ export default function ChatScreen() {
         throw new Error('Failed to fetch messages');
       }
 
-      const messagesData = await response.json();
-      console.log('Fetched messages count:', Array.isArray(messagesData) ? messagesData.length : 'n/a');
-      
-      setMessages(messagesData);
+      const payload = await response.json();
+      const incoming = Array.isArray(payload) ? (payload as Message[]) : [];
+
+      // 4) Merge strategy: if we had a cursor, merge; else replace
+      let nextMessages: Message[];
+      if ((latestTs || maxId) && incoming.length > 0) {
+        nextMessages = mergeAndSortMessages(sourceList, incoming);
+      } else if (!sourceList.length && incoming.length >= 0) {
+        nextMessages = mergeAndSortMessages([], incoming);
+      } else {
+        // Nothing new or server unreachable for incremental — keep what we have
+        nextMessages = sourceList;
+      }
+
+      setMessages(nextMessages);
       try {
-        await AsyncStorage.setItem(`messages_cache_${roomId}`, JSON.stringify(messagesData));
+        await AsyncStorage.setItem(`messages_cache_${roomId}`, JSON.stringify(nextMessages));
         setServerWarning(null);
       } catch {}
-      
-      // Scroll to bottom after loading messages
-      setTimeout(() => {
-        flatListRef.current?.scrollToEnd({ animated: true });
-      }, 100);
-      
+      // Scroll to bottom on initial load or when new items arrived
+      const hadNew = incoming.length > 0 || !sourceList.length;
+      if (isInitialLoadRef.current || hadNew) {
+        scrollToBottom(true);
+        // Mark initial load complete after scheduling scroll
+        isInitialLoadRef.current = false;
+      }
+
     } catch (error) {
       console.error('Error loading messages:', error);
-      // Load cached messages if available
+      // Fallback: show cached if available
       try {
         const cached = await AsyncStorage.getItem(`messages_cache_${roomId}`);
         if (cached) {
@@ -707,6 +782,48 @@ export default function ChatScreen() {
     } finally {
       setIsLoading(false);
     }
+  };
+
+  // Helpers for incremental fetching and local merging
+  const getLatestMessageTimestamp = (list: Message[]): number | null => {
+    if (!Array.isArray(list) || list.length === 0) return null;
+    try {
+      let max = -Infinity;
+      for (const m of list) {
+        const ms = parseTimestampSafe(m?.timestamp);
+        if (isFinite(ms) && ms > max) max = ms;
+      }
+      return isFinite(max) ? max : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const getMaxMessageId = (list: Message[]): number | null => {
+    if (!Array.isArray(list) || list.length === 0) return null;
+    try {
+      let max = -Infinity;
+      for (const m of list) {
+        const id = typeof m?.message_id === 'number' ? m.message_id : Number(m?.message_id);
+        if (isFinite(id) && id > max) max = id;
+      }
+      return isFinite(max) ? max : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const mergeAndSortMessages = (prev: Message[], incoming: Message[]): Message[] => {
+    const map = new Map<number, Message>();
+    for (const m of prev) {
+      if (typeof m.message_id === 'number') map.set(m.message_id, m);
+    }
+    for (const m of incoming) {
+      if (typeof m.message_id === 'number') map.set(m.message_id, m);
+    }
+    const merged = Array.from(map.values());
+    merged.sort((a, b) => parseTimestampSafe(a.timestamp) - parseTimestampSafe(b.timestamp));
+    return merged;
   };
 
   const sendMessage = async () => {
@@ -872,7 +989,16 @@ export default function ChatScreen() {
     );
   };
 
-
+  const parseTimestampSafe = (value: any): number => {
+    if (typeof value === 'number' && isFinite(value)) return value;
+    if (typeof value === 'string') {
+      const n = Number(value);
+      if (isFinite(n)) return n;
+      const p = Date.parse(value);
+      if (isFinite(p)) return p;
+    }
+    return Date.now();
+  };
 
   if (isLoading) {
     return (
@@ -944,6 +1070,9 @@ export default function ChatScreen() {
         ]}
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         keyboardVerticalOffset={Platform.OS === 'ios' ? 88 : 0}
+        onLayout={() => {
+          if (isInitialLoadRef.current) scrollToBottom(false);
+        }}
       >
         {/* Messages List */}
         <FlatList
@@ -1262,18 +1391,21 @@ export default function ChatScreen() {
       />
 
       {/* Floating Unread Badge */}
-      {unreadCount > 0 && !isAtBottom ? (
+      {!isAtBottom ? (
         <View style={styles.unreadBadgeContainer} pointerEvents="box-none">
           <TouchableOpacity
-            style={[styles.unreadBadge, { backgroundColor: '#420796' }]}
+            style={[styles.unreadBadge, { backgroundColor: '#10b981' }]}
             onPress={() => {
               setUnreadCount(0);
-              setIsAtBottom(true);
-              flatListRef.current?.scrollToEnd({ animated: true });
+              scrollToBottom(true);
             }}
+            accessibilityRole="button"
+            accessibilityLabel="Scroll to latest messages"
           >
-            <Ionicons name="arrow-down" size={14} color="#fff" />
-            <Text style={styles.unreadBadgeText}>{unreadCount}</Text>
+            <Ionicons name="arrow-down" size={16} color="#fff" />
+            {unreadCount > 0 ? (
+              <Text style={styles.unreadBadgeText}>{unreadCount}</Text>
+            ) : null}
           </TouchableOpacity>
         </View>
       ) : null}
@@ -1874,8 +2006,10 @@ const styles = StyleSheet.create({
   },
   unreadBadgeContainer: {
     position: 'absolute',
-    right: 16,
+    left: 0,
+    right: 0,
     bottom: 96, // sits above the input area
+    alignItems: 'center',
   },
   unreadBadge: {
     flexDirection: 'row',
