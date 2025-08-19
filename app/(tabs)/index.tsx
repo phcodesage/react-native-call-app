@@ -34,6 +34,8 @@ export default function HomeScreen() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const socketRef = useRef<Socket | null>(null);
   const [serverWarning, setServerWarning] = useState<string | null>(null);
+  // Keep latest online status map to avoid being overwritten by fetchContacts
+  const userStatusRef = useRef<Record<string, boolean>>({});
 
   // Helper function to safely render text
   const safeText = (text: any): string => {
@@ -96,7 +98,12 @@ export default function HomeScreen() {
     // Listen for user list updates (online/offline status)
     socket.on('user_list', (userList: Array<{username: string, online: boolean}>) => {
       console.log('Received user list:', userList);
-      updateContactsOnlineStatus(userList);
+      // Persist latest status map
+      const map: Record<string, boolean> = {};
+      for (const u of userList) map[u.username] = !!u.online;
+      userStatusRef.current = map;
+      // Apply to current contacts immediately
+      setContacts(prev => prev.map(c => ({ ...c, online: map[c.username] ?? false })));
     });
 
     socket.on('force_logout', (data) => {
@@ -214,7 +221,8 @@ export default function HomeScreen() {
         return {
           id: username,
           username: username,
-          online: false, // Will be updated via WebSocket
+          // Use latest known online status from socket (if available)
+          online: userStatusRef.current[username] ?? false,
           lastMessage: latestMessage?.message || 'No messages yet',
           lastMessageTime: latestMessage?.timestamp ? formatTimestamp(latestMessage.timestamp) : '',
           unreadCount: unreadCount,

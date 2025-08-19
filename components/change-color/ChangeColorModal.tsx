@@ -49,11 +49,8 @@ export default function ChangeColorModal({
         ]}>
           <View style={styles.header}>
             <Text style={[styles.title, { color: isDark ? '#f3f4f6' : '#111827' }]}>
-              Choose Background Color
+              Send Background Color
             </Text>
-            <TouchableOpacity onPress={onClose}>
-              <Ionicons name="close" size={18} color={isDark ? '#f3f4f6' : '#111827'} />
-            </TouchableOpacity>
           </View>
 
           <Text style={[styles.subtitle, { color: isDark ? '#d1d5db' : '#6b7280' }]}>
@@ -107,7 +104,7 @@ export default function ChangeColorModal({
           <View style={styles.footer}>
             <TouchableOpacity
               style={[styles.btn, { backgroundColor: '#6b7280' }]}
-              onPress={() => { onReset(); onClose(); }}
+              onPress={onClose}
             >
               <Text style={styles.btnText}>Cancel</Text>
             </TouchableOpacity>
@@ -135,7 +132,7 @@ const styles = StyleSheet.create({
     width: '100%', borderRadius: 16, padding: 16,
   },
   header: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
     marginBottom: 8,
   },
   title: { fontSize: 16, fontWeight: '600' },

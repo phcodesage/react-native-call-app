@@ -3,7 +3,7 @@ import { CallSetupModal } from '@/components/CallSetupModal';
 import { IncomingCallModal } from '@/components/IncomingCallModal';
 import { ThemedText } from '@/components/ThemedText';
 import { ThemedView } from '@/components/ThemedView';
-import VoiceRecorder from '@/components/VoiceRecorder';
+import VoiceRecorder from '@/components/voice-recorder/VoiceRecorder';
 import AudioMessage from '@/components/AudioMessage';
 import useCallFunctions from '@/components/CallFunction';
 import createSendNotification from '@/components/SendNotification';
@@ -29,15 +29,12 @@ import {
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { MediaStream } from 'react-native-webrtc';
 import io, { Socket } from 'socket.io-client';
-import { EmojiPicker } from '@/components/EmojiPicker';
 import { ENV, getApiUrl, getSocketUrl } from '../../config/env';
-import ColorPicker, { Panel1, BrightnessSlider, HueSlider } from 'reanimated-color-picker';
-import { runOnJS } from 'react-native-reanimated';
 import { Audio, InterruptionModeAndroid, InterruptionModeIOS } from 'expo-av';
 import ChangeColorModal from '@/components/change-color/ChangeColorModal';
 import { useChangeColorActions } from '@/components/change-color/useChangeColor';
+import { useVoiceRecorderActions } from '@/components/voice-recorder/useVoiceRecorder';
 
 const API_BASE_URL = ENV.API_BASE_URL;
 const SOCKET_URL = ENV.SOCKET_SERVER_URL;
@@ -63,6 +60,7 @@ interface Message {
   reactions?: { [emoji: string]: string[] }; // e.g. { '❤️': ['user1', 'user2'] }
   status?: string;
   room?: string;
+  client_id?: number;
 }
 
 export default function ChatScreen() {
@@ -98,6 +96,15 @@ export default function ChatScreen() {
   const [serverWarning, setServerWarning] = useState<string | null>(null);
   const [selectedMessageId, setSelectedMessageId] = useState<number | null>(null);
   const notificationSoundRef = useRef<Audio.Sound | null>(null);
+  const messageSoundRef = useRef<Audio.Sound | null>(null);
+  // Input auto-grow up to 2 lines, then scroll inside
+  const [inputHeight, setInputHeight] = useState<number>(40);
+  const INPUT_LINE_HEIGHT = 20; // should match visual line height
+  const INPUT_VERTICAL_PADDING = 20; // paddingVertical 10 (top) + 10 (bottom)
+  const MAX_INPUT_HEIGHT = INPUT_LINE_HEIGHT * 2 + INPUT_VERTICAL_PADDING; // two lines max
+  // Scrolling state for unread indicator
+  const [isAtBottom, setIsAtBottom] = useState(true);
+  const [unreadCount, setUnreadCount] = useState(0);
   const { applySelectedColor, resetBgColor } = useChangeColorActions({             // add this
     socketRef,
     roomId: roomId as string,
@@ -107,7 +114,8 @@ export default function ChatScreen() {
     flatListRef,
     setChatBgColor,
   });
-  
+  const { sendRecording } = useVoiceRecorderActions({ socketRef, roomId: roomId as string, user });
+
   // Helpers: hex <-> rgb
   const clamp255 = (n: number) => Math.max(0, Math.min(255, Math.round(n)));
   const hexToRgb = (hex?: string | null): { r: number; g: number; b: number } | null => {
@@ -174,12 +182,20 @@ export default function ChatScreen() {
         { shouldPlay: false, volume: 1.0, isLooping: false }
       );
       if (mounted) notificationSoundRef.current = sound;
+
+      const { sound: msgSound } = await Audio.Sound.createAsync(
+        require('../../assets/sounds/splat2.m4a'),
+        { shouldPlay: false, volume: 1.0, isLooping: false }
+      );
+      if (mounted) messageSoundRef.current = msgSound;
     })();
   
     return () => {
       mounted = false;
       notificationSoundRef.current?.unloadAsync();
       notificationSoundRef.current = null;
+      messageSoundRef.current?.unloadAsync();
+      messageSoundRef.current = null;
     };
   }, []);
 
@@ -370,8 +386,22 @@ export default function ChatScreen() {
 
     // Listen for incoming chat messages
     socket.on('receive_chat_message', (data: any) => {
-      console.log('Received chat message:', data);
+      console.log('Received chat message id:', data?.message_id);
+      // Ignore echo of our own message; we already add a local echo
+      if (data?.from && user?.username && data.from === user.username) return;
+      // Play message sound on incoming chat
+      void messageSoundRef.current?.replayAsync().catch((e) => {
+        console.warn('Failed to play message sound (incoming):', e);
+      });
+      // If user is not at bottom, increment unread counter and avoid auto-scroll
+      if (!isAtBottom) {
+        setUnreadCount((c) => c + 1);
+      }
       handleIncomingMessage(data);
+      // If at bottom, scroll to end after appending
+      if (isAtBottom) {
+        setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 50);
+      }
     });
 
     // Listen for incoming notifications
@@ -402,24 +432,24 @@ export default function ChatScreen() {
     });
 
     socket.on('message_delivered', (data: any) => {
-      console.log('Message delivered:', data);
+      console.log('Message delivered id:', data?.message_id);
       updateMessageStatus(data.message_id, 'delivered');
     });
 
     // Listen for live typing events
     socket.on('live_typing', (data: any) => {
-      console.log('Live typing:', data);
+      console.log('Live typing from:', data?.from);
       handleTypingIndicator(data);
     });
 
     // Listen for incoming audio messages
     socket.on('audio_message', (data: any) => {
-      console.log('Received audio message:', data);
+      console.log('Received audio message id:', data?.message_id);
       handleIncomingAudioMessage(data);
     });
 
     socket.on('receive_reaction', (data: any) => {
-      console.log('Received reaction:', data);
+      console.log('Received reaction for message id:', data?.message_id);
       handleIncomingReaction(data);
     });
 
@@ -480,18 +510,29 @@ export default function ChatScreen() {
     const newMessage: Message = {
       message_id: data.message_id,
       sender: data.from,
-      message: '', // Audio messages don't have text content
+      message: '',
       timestamp: data.timestamp ? new Date(data.timestamp).toISOString() : new Date().toISOString(),
       type: 'audio',
-      file_url: data.blob, // The base64 data URL from server
-      audio_data: data.duration ? data.duration.toString() : '30', // Duration in seconds
+      file_url: data.blob,
+      audio_data: data.duration ? data.duration.toString() : '30',
       status: data.status || 'sent'
     };
 
-    setMessages(prev => [...prev, newMessage]);
+    setMessages(prev => {
+      // Avoid duplicates
+      const exists = prev.some(msg => msg.message_id === newMessage.message_id);
+      if (exists) return prev;
+      const updated = [...prev, newMessage];
+      // Sort by timestamp
+      updated.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+      return updated;
+    });
+    setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
   };
 
   const handleIncomingMessage = (data: any) => {
+    // Extra guard: ignore own echoes here as well
+    if (data?.from && user?.username && data.from === user.username) return;
     const newMessage: Message = {
       message_id: data.message_id,
       sender: data.from,
@@ -639,7 +680,7 @@ export default function ChatScreen() {
       }
 
       const messagesData = await response.json();
-      console.log('Fetched messages:', messagesData);
+      console.log('Fetched messages count:', Array.isArray(messagesData) ? messagesData.length : 'n/a');
       
       setMessages(messagesData);
       try {
@@ -685,48 +726,40 @@ export default function ChatScreen() {
         typingTimeoutRef.current = null;
       }
       
+      // Generate a stable client id and timestamp for this message
+      const localTs = Date.now();
+      const isoTs = new Date(localTs).toISOString();
+
       // Send message via socket
-      socketRef.current.emit('message', {
+      socketRef.current.emit('send_chat_message', {
         room: roomId,
         message: messageToSend,
-        sender: user?.username || 'Anonymous',
-        timestamp: new Date().toISOString()
+        from: user?.username || 'Anonymous',
+        timestamp: isoTs,
+        client_id: localTs,
       });
       
+      // Optimistic local echo so it appears immediately
+      const localMsg: Message = {
+        message_id: localTs,
+        sender: user?.username || 'system',
+        content: messageToSend,
+        timestamp: isoTs,
+        type: 'text',
+        status: 'sent',
+      };
+      setMessages(prev => [...prev, localMsg]);
+      // Play message sound on send
+      void messageSoundRef.current?.replayAsync().catch((e) => {
+        console.warn('Failed to play message sound (send):', e);
+      });
+      setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
     } catch (error) {
       console.error('Error sending message:', error);
       Alert.alert('Error', 'Failed to send message');
       setNewMessage(messageToSend);
     } finally {
       setIsSending(false);
-    }
-  };
-
-  const handleVoiceRecording = async (uri: string, duration: number) => {
-    if (!socketRef.current || !roomId) return;
-    
-    try {
-      // Read the audio file and convert to base64
-      const response = await fetch(uri);
-      const blob = await response.blob();
-      const reader = new FileReader();
-      
-      reader.onloadend = () => {
-        const base64data = reader.result as string;
-        
-        // Send audio message with correct field names for server
-        socketRef.current?.emit('audio_message', {
-          room: roomId,
-          from: user?.username || 'Anonymous',
-          blob: base64data, // This will be a data URL like "data:audio/webm;base64,..."
-          timestamp: Date.now()
-        });
-      };
-      
-      reader.readAsDataURL(blob);
-    } catch (error) {
-      console.error('Error sending audio message:', error);
-      Alert.alert('Error', 'Failed to send voice message');
     }
   };
 
@@ -787,7 +820,11 @@ export default function ChatScreen() {
             </View>
           )}
 
-          <View style={[styles.messageBubble, isOutgoing ? styles.myMessageBubble : styles.otherMessageBubble]}>
+          <TouchableOpacity
+            activeOpacity={0.9}
+            onLongPress={() => setSelectedMessageId(item.message_id)}
+            style={[styles.messageBubble, isOutgoing ? styles.myMessageBubble : styles.otherMessageBubble]}
+          >
             {item.type === 'audio' ? (
               <AudioMessage
                 uri={item.file_url || ''}
@@ -809,7 +846,7 @@ export default function ChatScreen() {
               </Text>
             )}
             <Text style={styles.timestamp}>{formatTimestamp(item.timestamp)}</Text>
-          </View>
+          </TouchableOpacity>
 
           {reactions.length > 0 && (
             <View style={[styles.reactionsContainer, { alignSelf: isOutgoing ? 'flex-end' : 'flex-start' }]}>
@@ -912,11 +949,26 @@ export default function ChatScreen() {
         <FlatList
           ref={flatListRef}
           data={messages}
-          keyExtractor={(item, index) => `${item.message_id}-${index}`}
+          keyExtractor={(item) => String(item.message_id)}
           renderItem={renderMessage}
           contentContainerStyle={styles.messagesContainer}
           ListEmptyComponent={<Text style={styles.emptyText}>No messages yet.</Text>}
           onEndReachedThreshold={0.5}
+          removeClippedSubviews
+          windowSize={8}
+          initialNumToRender={12}
+          maxToRenderPerBatch={12}
+          updateCellsBatchingPeriod={50}
+          onScroll={(e) => {
+            const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
+            const paddingToBottom = 40;
+            const atBottom = contentOffset.y + layoutMeasurement.height >= contentSize.height - paddingToBottom;
+            if (atBottom !== isAtBottom) {
+              setIsAtBottom(atBottom);
+              if (atBottom) setUnreadCount(0);
+            }
+          }}
+          scrollEventThrottle={16}
         />
         
         {/* Live Typing Indicator - Always visible above input */}
@@ -973,6 +1025,36 @@ export default function ChatScreen() {
         }}
       />
 
+        {/* Reaction Picker Modal */}
+        <Modal
+          visible={selectedMessageId !== null}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setSelectedMessageId(null)}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={[styles.emojiPickerContainer, { backgroundColor: isDark ? '#111827' : '#ffffff' }]}>
+              <View style={styles.emojiPickerHeader}>
+                <Text style={{ fontWeight: '600', color: isDark ? '#f3f4f6' : '#111827' }}>React to message</Text>
+                <TouchableOpacity onPress={() => setSelectedMessageId(null)}>
+                  <Ionicons name="close" size={18} color={isDark ? '#f3f4f6' : '#111827'} />
+                </TouchableOpacity>
+              </View>
+              <View style={styles.emojiGrid}>
+                {['👍','😂','❤️','🔥','🎉','👏','🙏','😮','😢','😡','🌟','✅'].map(e => (
+                  <TouchableOpacity
+                    key={e}
+                    style={[styles.emojiItem, { backgroundColor: isDark ? '#1f2937' : '#f3f4f6' }]}
+                    onPress={() => { if (selectedMessageId) handleSendReaction(selectedMessageId, e); }}
+                  >
+                    <Text style={styles.emojiText}>{e}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+          </View>
+        </Modal>
+
         {/* Emoji Picker */}
         {/* Input Area */}
         <View style={[
@@ -982,6 +1064,20 @@ export default function ChatScreen() {
             paddingBottom: 12
           }
         ]}>
+          {/* Actions Toggle on the left */}
+          <TouchableOpacity
+            style={[
+              styles.actionsToggleButton,
+              { backgroundColor: showActions ? '#8b5cf6' : (isDark ? '#4b5563' : '#d1d5db') }
+            ]}
+            onPress={() => setShowActions(!showActions)}
+          >
+            <Ionicons 
+              name={showActions ? "chevron-down" : "add"} 
+              size={20} 
+              color={showActions ? "white" : (isDark ? '#9ca3af' : '#6b7280')} 
+            />
+          </TouchableOpacity>
           {/* Emoji Button */}
           <TouchableOpacity
             style={[styles.emojiButton, { backgroundColor: isDark ? '#374151' : '#e5e7eb' }]}
@@ -989,13 +1085,17 @@ export default function ChatScreen() {
           >
             <Ionicons name="happy" size={20} color={isDark ? '#f3f4f6' : '#374151'} />
           </TouchableOpacity>
-          
           <TextInput
             style={[
               styles.messageInput,
               { 
                 backgroundColor: isDark ? '#374151' : '#f3f4f6',
-                color: isDark ? '#ffffff' : '#1f2937'
+                color: isDark ? '#ffffff' : '#1f2937',
+                // Limit growth to two lines; scroll inside after that
+                height: Math.max(40, inputHeight),
+                maxHeight: MAX_INPUT_HEIGHT,
+                lineHeight: INPUT_LINE_HEIGHT,
+                textAlignVertical: 'top'
               }
             ]}
             value={newMessage}
@@ -1007,8 +1107,13 @@ export default function ChatScreen() {
             multiline
             maxLength={1000}
             blurOnSubmit={false}
+            onContentSizeChange={(e) => {
+              const h = e.nativeEvent.contentSize.height;
+              const capped = Math.min(h, MAX_INPUT_HEIGHT);
+              setInputHeight(capped);
+            }}
+            scrollEnabled={inputHeight >= MAX_INPUT_HEIGHT}
           />
-          
           {/* Send Button comes next to input */}
           <TouchableOpacity
             style={[
@@ -1023,21 +1128,6 @@ export default function ChatScreen() {
             ) : (
               <Ionicons name="send" size={20} color="#ffffff" />
             )}
-          </TouchableOpacity>
-
-          {/* Actions Toggle on the far right */}
-          <TouchableOpacity
-            style={[
-              styles.actionsToggleButton,
-              { backgroundColor: showActions ? '#8b5cf6' : (isDark ? '#4b5563' : '#d1d5db') }
-            ]}
-            onPress={() => setShowActions(!showActions)}
-          >
-            <Ionicons 
-              name={showActions ? "chevron-down" : "add"} 
-              size={20} 
-              color={showActions ? "white" : (isDark ? '#9ca3af' : '#6b7280')} 
-            />
           </TouchableOpacity>
         </View>
 
@@ -1168,8 +1258,25 @@ export default function ChatScreen() {
       <VoiceRecorder
         visible={showVoiceRecorder}
         onClose={() => setShowVoiceRecorder(false)}
-        onSendRecording={handleVoiceRecording}
+        onSendRecording={sendRecording}
       />
+
+      {/* Floating Unread Badge */}
+      {unreadCount > 0 && !isAtBottom ? (
+        <View style={styles.unreadBadgeContainer} pointerEvents="box-none">
+          <TouchableOpacity
+            style={[styles.unreadBadge, { backgroundColor: '#420796' }]}
+            onPress={() => {
+              setUnreadCount(0);
+              setIsAtBottom(true);
+              flatListRef.current?.scrollToEnd({ animated: true });
+            }}
+          >
+            <Ionicons name="arrow-down" size={14} color="#fff" />
+            <Text style={styles.unreadBadgeText}>{unreadCount}</Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
     </SafeAreaView>
   );
 }
@@ -1522,7 +1629,7 @@ const styles = StyleSheet.create({
     borderRadius: 18,
     alignItems: 'center',
     justifyContent: 'center',
-    marginLeft: 8,
+    marginRight: 8,
   },
   modalOverlay: {
     flex: 1,
@@ -1764,7 +1871,28 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     borderRadius: 8,
     borderWidth: 1,
+  },
+  unreadBadgeContainer: {
+    position: 'absolute',
+    right: 16,
+    bottom: 96, // sits above the input area
+  },
+  unreadBadge: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 16,
+    shadowColor: '#000',
+    shadowOpacity: 0.2,
+    shadowOffset: { width: 0, height: 2 },
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  unreadBadgeText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '700',
   },
 });

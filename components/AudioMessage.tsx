@@ -5,11 +5,17 @@ import {
   TouchableOpacity,
   StyleSheet,
   Dimensions,
+  ActivityIndicator,
+  Platform,
 } from 'react-native';
 import { Audio } from 'expo-av';
+import * as FileSystem from 'expo-file-system';
 import { Ionicons } from '@expo/vector-icons';
 import { useThemeColor } from '@/hooks/useThemeColor';
 // Using simple View-based waveform instead of Skia for compatibility
+
+// Native waveform (Android/iOS). We'll use on Android only for now.
+import { Waveform } from '@simform_solutions/react-native-audio-waveform';
 
 interface AudioMessageProps {
   uri: string;
@@ -31,13 +37,14 @@ export default function AudioMessage({
   const [currentTime, setCurrentTime] = useState(0);
   const [isLoaded, setIsLoaded] = useState(false);
   const [waveformData, setWaveformData] = useState<number[]>([]);
+  const [tempFileUri, setTempFileUri] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [waveformWidth, setWaveformWidth] = useState<number>(0);
   
   const positionUpdateInterval = useRef<NodeJS.Timeout | null>(null);
 
-  const backgroundColor = useThemeColor({}, 'background');
-  const textColor = useThemeColor({}, 'text');
   const primaryColor = useThemeColor({}, 'tint');
-  const bubbleColor = isOutgoing ? primaryColor : '#6b7280';
 
   useEffect(() => {
     // Generate mock waveform data based on duration
@@ -47,6 +54,23 @@ export default function AudioMessage({
     );
     setWaveformData(mockData);
 
+    // If URI is base64 data, proactively write a temp file so native waveform can render immediately
+    (async () => {
+      try {
+        if (uri && uri.startsWith('data:')) {
+          const mimeMatch = uri.match(/^data:(.*?);/);
+          const mime = (mimeMatch && mimeMatch[1]) ? mimeMatch[1] : 'audio/m4a';
+          const base64 = uri.includes('base64,') ? uri.split('base64,').pop() : null;
+          if (!base64 || base64.trim().length === 0) return;
+          const ext = mime.includes('wav') ? 'wav' : mime.includes('mp3') ? 'mp3' : mime.includes('aac') ? 'aac' : mime.includes('mpeg') ? 'mp3' : mime.includes('x-m4a') || mime.includes('m4a') ? 'm4a' : 'caf';
+          const fileName = `audio_${Date.now()}.${ext}`;
+          const fileUri = `${FileSystem.cacheDirectory}${fileName}`;
+          await FileSystem.writeAsStringAsync(fileUri, base64, { encoding: FileSystem.EncodingType.Base64 });
+          setTempFileUri(fileUri);
+        }
+      } catch {}
+    })();
+
     return () => {
       if (sound) {
         sound.unloadAsync();
@@ -54,11 +78,21 @@ export default function AudioMessage({
       if (positionUpdateInterval.current) {
         clearInterval(positionUpdateInterval.current);
       }
+      if (tempFileUri) {
+        // Best-effort cleanup of temp file
+        FileSystem.deleteAsync(tempFileUri, { idempotent: true }).catch(() => {});
+      }
     };
   }, [duration]);
 
-  const loadAudio = async () => {
+  const loadAudio = async (): Promise<Audio.Sound | null> => {
     try {
+      setError(null);
+      if (!uri || uri.trim().length === 0) {
+        console.warn('AudioMessage: empty URI, skipping load');
+        setIsLoaded(false);
+        return null;
+      }
       if (sound) {
         await sound.unloadAsync();
       }
@@ -66,8 +100,19 @@ export default function AudioMessage({
       // Handle both file URIs and base64 data URLs
       let audioSource;
       if (uri.startsWith('data:')) {
-        // Base64 data URL from server
-        audioSource = { uri };
+        // Base64 data URL from server -> write to a temp file for reliable playback
+        // Example: data:audio/m4a;base64,AAAA...
+        // Sanitize nested data: prefixes and extract mime/base64 robustly
+        const mimeMatch = uri.match(/^data:(.*?);/);
+        const mime = (mimeMatch && mimeMatch[1]) ? mimeMatch[1] : 'audio/m4a';
+        const base64 = uri.includes('base64,') ? uri.split('base64,').pop() : null;
+        if (!base64 || base64.trim().length === 0) throw new Error('Invalid data URI');
+        const ext = mime.includes('wav') ? 'wav' : mime.includes('mp3') ? 'mp3' : mime.includes('aac') ? 'aac' : mime.includes('mpeg') ? 'mp3' : mime.includes('x-m4a') || mime.includes('m4a') ? 'm4a' : 'caf';
+        const fileName = `audio_${Date.now()}.${ext}`;
+        const fileUri = `${FileSystem.cacheDirectory}${fileName}`;
+        await FileSystem.writeAsStringAsync(fileUri, base64, { encoding: FileSystem.EncodingType.Base64 });
+        setTempFileUri(fileUri);
+        audioSource = { uri: fileUri };
       } else if (uri.startsWith('file://')) {
         // Local file URI
         audioSource = { uri };
@@ -76,10 +121,7 @@ export default function AudioMessage({
         audioSource = { uri };
       }
 
-      const { sound: newSound } = await Audio.Sound.createAsync(
-        audioSource,
-        { shouldPlay: false }
-      );
+      const { sound: newSound } = await Audio.Sound.createAsync(audioSource, { shouldPlay: false });
 
       setSound(newSound);
       setIsLoaded(true);
@@ -98,18 +140,30 @@ export default function AudioMessage({
         }
       });
 
+      return newSound;
     } catch (error) {
       console.error('Error loading audio:', error);
-      console.error('Audio URI:', uri);
       // Set a fallback state to show the user there was an error
       setIsLoaded(false);
+      setError('Failed to load audio');
+      return null;
     }
   };
 
   const togglePlayback = async () => {
     try {
+      if (!uri || uri.trim().length === 0) {
+        console.warn('AudioMessage: cannot play, empty URI');
+        return;
+      }
       if (!sound) {
-        await loadAudio();
+        setIsLoading(true);
+        const created = await loadAudio();
+        setIsLoading(false);
+        if (created) {
+          await created.playAsync();
+          setIsPlaying(true);
+        }
         return;
       }
 
@@ -125,6 +179,8 @@ export default function AudioMessage({
       }
     } catch (error) {
       console.error('Error toggling playback:', error);
+      setError('Playback error');
+      setIsLoading(false);
     }
   };
 
@@ -148,10 +204,27 @@ export default function AudioMessage({
   };
 
   const WaveformPlayer = () => {
-    const { width } = Dimensions.get('window');
-    const maxWidth = width * 0.6; // 60% of screen width
-    const canvasWidth = Math.min(200, maxWidth);
-    const canvasHeight = 40;
+    const { width: screenWidth } = Dimensions.get('window');
+    // Use measured width from container; fallback to 60% of screen if not measured yet
+    const fallbackWidth = screenWidth * 0.6;
+    const canvasWidth = Math.max(120, waveformWidth || fallbackWidth);
+    const canvasHeight = 48;
+
+    // Prefer native waveform on Android when we have a local path
+    const localPath = tempFileUri || (uri?.startsWith('file://') ? uri : null);
+    if (Platform.OS === 'android' && localPath) {
+      return (
+        <View style={{ width: canvasWidth, height: canvasHeight }}>
+          <Waveform
+            mode="static"
+            path={localPath}
+            candleSpace={2}
+            candleWidth={3}
+            scrubColor="white"
+          />
+        </View>
+      );
+    }
 
     if (waveformData.length === 0) {
       return <View style={{ width: canvasWidth, height: canvasHeight }} />;
@@ -181,7 +254,8 @@ export default function AudioMessage({
                 style={{
                   width: barWidth - 1,
                   height: barHeight,
-                  backgroundColor: isPlayed ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.3)',
+                  // Use strong contrast since parent bubble is dark
+                  backgroundColor: isPlayed ? 'rgba(255,255,255,0.95)' : 'rgba(255,255,255,0.5)',
                   marginRight: 1,
                   borderRadius: 1,
                 }}
@@ -195,33 +269,38 @@ export default function AudioMessage({
 
   const PlayButton = () => (
     <TouchableOpacity
-      style={[styles.playButton, { backgroundColor: 'rgba(255,255,255,0.2)' }]}
+      style={[styles.playButton, { backgroundColor: 'rgba(255,255,255,0.25)' }]}
       onPress={togglePlayback}
+      disabled={isLoading || !uri}
     >
-      <Ionicons
-        name={isPlaying ? 'pause' : 'play'}
-        size={20}
-        color="white"
-      />
+      {isLoading ? (
+        <ActivityIndicator size="small" color="#fff" />
+      ) : (
+        <Ionicons
+          name={isPlaying ? 'pause' : 'play'}
+          size={20}
+          color="white"
+        />
+      )}
     </TouchableOpacity>
   );
 
   return (
-    <View style={[
-      styles.container,
-      {
-        alignSelf: isOutgoing ? 'flex-end' : 'flex-start',
-        backgroundColor: bubbleColor,
-      }
-    ]}>
+    <View style={styles.container}>
       <View style={styles.audioContent}>
         <PlayButton />
         
-        <View style={styles.waveformContainer}>
+        <View
+          style={styles.waveformContainer}
+          onLayout={(e) => setWaveformWidth(e.nativeEvent.layout.width)}
+        >
           <WaveformPlayer />
           <Text style={styles.timeText}>
             {isPlaying ? formatTime(currentTime) : formatTime(duration * 1000)}
           </Text>
+          {error ? (
+            <Text style={styles.errorText}>Tap to retry</Text>
+          ) : null}
         </View>
       </View>
 
@@ -239,21 +318,18 @@ export default function AudioMessage({
 
 const styles = StyleSheet.create({
   container: {
-    maxWidth: '80%',
+    maxWidth: '100%',
     marginVertical: 4,
-    marginHorizontal: 12,
-    borderRadius: 18,
-    padding: 12,
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.2,
-    shadowRadius: 2,
+    marginHorizontal: 0,
+    borderRadius: 0,
+    padding: 0,
+    // No shadow here; parent bubble already has elevation/shadow
   },
   audioContent: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
+    minHeight: 48,
   },
   playButton: {
     width: 36,
@@ -272,6 +348,11 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
     letterSpacing: 0.5,
+  },
+  errorText: {
+    color: 'rgba(255,255,255,0.8)',
+    fontSize: 10,
+    marginTop: 2,
   },
   reactionButton: {
     position: 'absolute',

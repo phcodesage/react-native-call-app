@@ -25,10 +25,11 @@ export interface RTCIceServer {
 // Type extensions for react-native-webrtc
 interface ReactNativeRTCPeerConnection extends RTCPeerConnection {
   onicecandidate: ((event: any) => void) | null;
-  onaddstream: ((event: any) => void) | null;
+  ontrack: ((event: any) => void) | null;
   oniceconnectionstatechange: (() => void) | null;
-  addStream: (stream: MediaStream) => void;
-  removeStream: (stream: MediaStream) => void;
+  // Modern APIs used instead of deprecated addStream/removeStream
+  addTrack: (track: any, stream: MediaStream) => any; // RTCRtpSender
+  getSenders: () => any[]; // RTCRtpSender[]
 }
 
 export interface CallDevice {
@@ -123,9 +124,17 @@ export class WebRTCService {
 
       this.localStream = await mediaDevices.getUserMedia(constraints);
       
-      // Add stream to peer connection
+      // Attach local tracks to peer connection (modern API)
       if (this.peerConnection && this.localStream) {
-        this.peerConnection.addStream(this.localStream);
+        const pc = this.peerConnection!;
+        const ls = this.localStream!;
+        ls.getTracks().forEach((track: any) => {
+          try {
+            pc.addTrack(track, ls as any);
+          } catch (e) {
+            console.warn('WebRTCService: addTrack failed for track', track?.kind, e);
+          }
+        });
       }
 
       // Save device preferences if provided
@@ -158,12 +167,28 @@ export class WebRTCService {
       }
     };
 
-    this.peerConnection.onaddstream = (event: any) => {
-      if (event.stream) {
-        this.remoteStream = event.stream;
+    // Use ontrack (modern API) instead of deprecated onaddstream
+    this.peerConnection.ontrack = (event: any) => {
+      try {
+        if (!this.remoteStream) {
+          this.remoteStream = new MediaStream();
+        }
+        if (event.streams && event.streams[0]) {
+          // Prefer stream provided by the event when available
+          this.remoteStream = event.streams[0];
+        } else if (event.track) {
+          // Fallback: manually compose remote stream
+          // Ensure the track isn't already added
+          const exists = this.remoteStream.getTracks().some((t) => t.id === event.track.id);
+          if (!exists) {
+            this.remoteStream.addTrack(event.track);
+          }
+        }
         if (this.remoteStream) {
           this.onRemoteStream?.(this.remoteStream);
         }
+      } catch (err) {
+        console.warn('WebRTCService: Error handling ontrack event', err);
       }
     };
 
@@ -264,7 +289,7 @@ export class WebRTCService {
     }
     this.candidateQueue = []; // Clear the queue
     
-    const answer = await this.peerConnection.createAnswer({});
+    const answer = await this.peerConnection.createAnswer();
     // Enable stereo audio
     const sessionDescription = answer as RTCSessionDescription;
     if (sessionDescription && sessionDescription.sdp) {
@@ -380,19 +405,29 @@ export class WebRTCService {
       const newAudioTrack = newStream.getAudioTracks()[0];
       const oldAudioTrack = this.localStream.getAudioTracks()[0];
 
-      if (newAudioTrack && oldAudioTrack) {
+      if (newAudioTrack) {
         // Replace track in local stream
-        this.localStream.removeTrack(oldAudioTrack);
+        if (oldAudioTrack) {
+          this.localStream.removeTrack(oldAudioTrack);
+        }
         this.localStream.addTrack(newAudioTrack);
 
-        // Replace stream in peer connection
-        // Note: getSenders may not be available in react-native-webrtc
-        // Using removeStream/addStream approach instead
-        const oldStream = this.localStream;
-        this.peerConnection.removeStream(oldStream);
-        this.peerConnection.addStream(this.localStream);
-        // Stop old track
-        oldAudioTrack.stop();
+        // Replace sender track on the peer connection (modern API)
+        const sender = this.peerConnection.getSenders().find((s: any) => s.track && s.track.kind === 'audio');
+        if (sender && sender.replaceTrack) {
+          await sender.replaceTrack(newAudioTrack);
+        } else {
+          console.warn('WebRTCService: getSenders/replaceTrack not available; audio device switch may not propagate');
+        }
+
+        // Stop old track after replacement
+        if (oldAudioTrack) {
+          try {
+            oldAudioTrack.stop();
+          } catch (e) {
+            console.warn('Error stopping old audio track:', e);
+          }
+        }
 
         // Save preference
         await this.saveDevicePreferences({ audioDeviceId: deviceId });
