@@ -105,6 +105,8 @@ export default function ChatScreen() {
   const messageSoundRef = useRef<Audio.Sound | null>(null);
   // Input auto-grow up to 2 lines, then scroll inside
   const [inputHeight, setInputHeight] = useState<number>(40);
+  const [inputContainerHeight, setInputContainerHeight] = useState<number>(72);
+  const [actionsContainerHeight, setActionsContainerHeight] = useState<number>(0);
   const INPUT_LINE_HEIGHT = 20; // should match visual line height
   const INPUT_VERTICAL_PADDING = 20; // paddingVertical 10 (top) + 10 (bottom)
   const MAX_INPUT_HEIGHT = INPUT_LINE_HEIGHT * 2 + INPUT_VERTICAL_PADDING; // two lines max
@@ -1186,7 +1188,7 @@ export default function ChatScreen() {
 
         {/* Emoji Picker */}
         {/* Input Area */}
-        <View style={[
+        <View onLayout={(e) => setInputContainerHeight(e.nativeEvent.layout.height)} style={[
           styles.inputContainer, 
           {
             backgroundColor: isDark ? '#1f2937' : '#ffffff',
@@ -1262,7 +1264,7 @@ export default function ChatScreen() {
 
         {/* Chat Actions - toggled grid under input */}
         {showActions ? (
-          <View style={[
+          <View onLayout={(e) => setActionsContainerHeight(e.nativeEvent.layout.height)} style={[
             styles.actionsContainer,
             { backgroundColor: isDark ? '#111827' : '#ffffff', borderTopColor: isDark ? '#374151' : '#e5e7eb' }
           ]}>
@@ -1392,7 +1394,10 @@ export default function ChatScreen() {
 
       {/* Floating Unread Badge */}
       {!isAtBottom ? (
-        <View style={styles.unreadBadgeContainer} pointerEvents="box-none">
+        <View style={[
+          styles.unreadBadgeContainer, 
+          { bottom: inputContainerHeight + (showActions ? actionsContainerHeight : 0) + 12 } 
+        ]} pointerEvents="box-none">
           <TouchableOpacity
             style={[styles.unreadBadge, { backgroundColor: '#10b981' }]}
             onPress={() => {
@@ -2008,7 +2013,6 @@ const styles = StyleSheet.create({
     position: 'absolute',
     left: 0,
     right: 0,
-    bottom: 96, // sits above the input area
     alignItems: 'center',
   },
   unreadBadge: {
