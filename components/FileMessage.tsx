@@ -226,7 +226,6 @@ export default function FileMessage({
                 onPress={downloadFile}
                 disabled={isDownloading}
               >
-                <Ionicons name="download" size={20} color="white" />
                 <Text style={styles.downloadButtonText}>Download</Text>
               </TouchableOpacity>
             )}

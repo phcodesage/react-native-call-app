@@ -130,6 +130,7 @@ export default function ChatScreen() {
   const [showPickedFullScreen, setShowPickedFullScreen] = useState(false);
   const [pickedImageError, setPickedImageError] = useState<string | null>(null);
   const [pickedVideoError, setPickedVideoError] = useState<string | null>(null);
+  const [isPreviewLoading, setIsPreviewLoading] = useState<boolean>(false);
   const { applySelectedColor, resetBgColor } = useChangeColorActions({ 
     socketRef,
     roomId: roomId as string,
@@ -397,6 +398,8 @@ export default function ChatScreen() {
     if (roomId && token) {
       // Mark as initial load for this room
       isInitialLoadRef.current = true;
+      // Reset messages immediately to avoid showing stale while loading
+      setMessages([]);
       loadRoomMessages();
       initializeSocket();
       // Extra nudge to bottom right after mount
@@ -801,8 +804,9 @@ export default function ChatScreen() {
         if (cached) {
           const parsed = JSON.parse(cached);
           if (Array.isArray(parsed)) {
-            baselineMessages = parsed as Message[];
-            setMessages(parsed);
+            // Normalize cached messages to ensure consistent rendering (esp. files)
+            baselineMessages = (parsed as any[]).map(normalizeMessage);
+            setMessages(baselineMessages);
             // We can stop showing spinner early since UI has content
             setIsLoading(false);
             // On initial open, ensure we land at bottom of cached list
@@ -838,7 +842,9 @@ export default function ChatScreen() {
       }
 
       const payload = await response.json();
-      const incoming = Array.isArray(payload) ? (payload as Message[]) : [];
+      const incoming = Array.isArray(payload)
+        ? (payload as any[]).map(normalizeMessage)
+        : [];
 
       // 4) Merge strategy: if we had a cursor, merge; else replace
       let nextMessages: Message[];
@@ -846,8 +852,37 @@ export default function ChatScreen() {
         nextMessages = mergeAndSortMessages(sourceList, incoming);
       } else if (!sourceList.length && incoming.length >= 0) {
         nextMessages = mergeAndSortMessages([], incoming);
+      } else if (baselineMessages.length > 0 && incoming.length === 0) {
+        // We had cached items but server incremental returned nothing.
+        // Do a full fetch without cursors to reconcile with possible DB reset.
+        try {
+          const fullUrl = `${API_BASE_URL}/messages/${roomId}`;
+          const fullResp = await fetch(fullUrl, {
+            method: 'GET',
+            headers: {
+              'Authorization': `Bearer ${token}`,
+              'Content-Type': 'application/json',
+            },
+          });
+          if (fullResp.ok) {
+            const fullPayload = await fullResp.json();
+            const fullList = Array.isArray(fullPayload) ? (fullPayload as any[]).map(normalizeMessage) : [];
+            if (fullList.length === 0) {
+              nextMessages = [];
+              // Clear cache since backend has no data for this room now
+              try { await AsyncStorage.removeItem(`messages_cache_${roomId}`); } catch {}
+            } else {
+              nextMessages = mergeAndSortMessages([], fullList);
+            }
+          } else {
+            // Keep what we have if full fetch failed
+            nextMessages = sourceList;
+          }
+        } catch {
+          nextMessages = sourceList;
+        }
       } else {
-        // Nothing new or server unreachable for incremental — keep what we have
+        // Nothing new — keep what we have
         nextMessages = sourceList;
       }
 
@@ -871,7 +906,7 @@ export default function ChatScreen() {
         const cached = await AsyncStorage.getItem(`messages_cache_${roomId}`);
         if (cached) {
           const parsed = JSON.parse(cached);
-          if (Array.isArray(parsed)) setMessages(parsed);
+          if (Array.isArray(parsed)) setMessages((parsed as any[]).map(normalizeMessage));
         }
       } catch {}
       setServerWarning('Server unreachable. Showing cached messages.');
@@ -910,16 +945,120 @@ export default function ChatScreen() {
   };
 
   const mergeAndSortMessages = (prev: Message[], incoming: Message[]): Message[] => {
-    const map = new Map<number, Message>();
+    // Build an index allowing replacement of local-echos by server-confirmed copies
+    // Priority order when duplicates detected:
+    // 1) Prefer message with a real server message_id (numeric) over client-only echo
+    // 2) Prefer message with status 'delivered' over undefined
+    const byKey = new Map<string, Message>();
+
+    const makeKey = (m: Message): string => {
+      if (m?.client_id) return `cid:${m.client_id}`;
+      if (typeof m?.message_id === 'number') return `mid:${m.message_id}`;
+      return `ts:${parseTimestampSafe(m?.timestamp)}`;
+    };
+
+    const choose = (existing: Message | undefined, next: Message): Message => {
+      if (!existing) return next;
+      const existingHasServerId = typeof existing.message_id === 'number' && existing.client_id !== existing.message_id;
+      const nextHasServerId = typeof next.message_id === 'number' && next.client_id !== next.message_id;
+      if (nextHasServerId && !existingHasServerId) return next;
+      if (!nextHasServerId && existingHasServerId) return existing;
+      const existingDelivered = existing.status === 'delivered';
+      const nextDelivered = next.status === 'delivered';
+      if (nextDelivered && !existingDelivered) return next;
+      // Otherwise, keep the newer by timestamp
+      return parseTimestampSafe(next.timestamp) >= parseTimestampSafe(existing.timestamp) ? next : existing;
+    };
+
+    // Seed with previous list
     for (const m of prev) {
-      if (typeof m.message_id === 'number') map.set(m.message_id, m);
+      byKey.set(makeKey(m), m);
     }
+    // Merge incoming, replacing when same client_id or message_id
     for (const m of incoming) {
-      if (typeof m.message_id === 'number') map.set(m.message_id, m);
+      const key = makeKey(m);
+      const picked = choose(byKey.get(key), m);
+      byKey.set(key, picked);
+      // Also ensure we don't keep a duplicate under a different key when client_id and message_id both exist
+      if (m.client_id && typeof m.message_id === 'number') {
+        const altKey = `mid:${m.message_id}`;
+        const prevAlt = byKey.get(altKey);
+        const chosenAlt = choose(prevAlt, m);
+        byKey.set(altKey, chosenAlt);
+        // Remove the old cid entry if both point to different objects
+        const cidKey = `cid:${m.client_id}`;
+        const cidVal = byKey.get(cidKey);
+        if (cidVal && cidVal !== chosenAlt) {
+          byKey.set(cidKey, chosenAlt);
+        }
+      }
     }
-    const merged = Array.from(map.values());
+
+    // Collapse to unique by message_id primarily to avoid duplicates with differing keys
+    const byMessageId = new Map<number, Message>();
+    for (const msg of byKey.values()) {
+      if (typeof msg.message_id === 'number') {
+        const existing = byMessageId.get(msg.message_id);
+        byMessageId.set(msg.message_id, choose(existing, msg));
+      }
+    }
+
+    let merged = Array.from(byKey.values());
+    if (byMessageId.size > 0) {
+      merged = Array.from(new Set(Array.from(byMessageId.values())));
+    }
     merged.sort((a, b) => parseTimestampSafe(a.timestamp) - parseTimestampSafe(b.timestamp));
     return merged;
+  };
+
+  // Normalize raw messages from server/cache to our UI shape, especially for files
+  const inferMimeFromName = (name?: string): string | undefined => {
+    if (!name) return undefined;
+    const lower = name.toLowerCase();
+    if (/(\.jpg|\.jpeg|\.png|\.gif|\.webp|\.heic|\.heif)$/.test(lower)) return 'image/*';
+    if (/(\.mp4|\.mov|\.m4v|\.webm)$/.test(lower)) return 'video/*';
+    if (/(\.mp3|\.wav|\.m4a|\.aac|\.ogg)$/.test(lower)) return 'audio/*';
+    if (/(\.pdf)$/.test(lower)) return 'application/pdf';
+    if (/(\.docx?|\.rtf)$/.test(lower)) return 'application/msword';
+    if (/(\.xlsx?)$/.test(lower)) return 'application/vnd.ms-excel';
+    if (/(\.zip|\.rar|\.7z)$/.test(lower)) return 'application/zip';
+    return undefined;
+  };
+
+  const coalesce = <T,>(...vals: T[]): T | undefined => vals.find(v => v !== undefined && v !== null) as any;
+
+  const normalizeMessage = (raw: any): Message => {
+    const iso = pickTimestampISO(raw);
+    const msg: Message = {
+      message_id: typeof raw?.message_id === 'number' ? raw.message_id : parseTimestampSafe(iso),
+      sender: raw?.sender || raw?.from || 'unknown',
+      content: raw?.content ?? raw?.message,
+      message: raw?.message,
+      timestamp: iso,
+      type: raw?.type as any,
+      status: raw?.status,
+      room: raw?.room,
+      client_id: raw?.client_id && Number(raw.client_id),
+      reactions: raw?.reactions || {},
+    };
+
+    // File mapping: support multiple backend shapes
+    const fileUrl = coalesce<string>(raw?.file_url, raw?.url, raw?.attachment_url, raw?.blob);
+    const fileName = coalesce<string>(raw?.file_name, raw?.filename, raw?.name);
+    const fileType = coalesce<string>(raw?.file_type, raw?.mime_type, raw?.mimetype) || inferMimeFromName(fileName);
+    const fileSize = raw?.file_size ?? raw?.size;
+    const fileId = coalesce<string>(raw?.file_id, raw?.id);
+
+    const looksLikeFile = raw?.type === 'file' || !!fileUrl || !!fileId || !!fileName;
+    if (looksLikeFile) {
+      msg.type = 'file';
+      msg.file_url = fileUrl;
+      msg.file_name = fileName;
+      msg.file_type = fileType;
+      msg.file_size = typeof fileSize === 'string' ? parseInt(fileSize) : fileSize;
+      msg.file_id = fileId;
+    }
+    return msg;
   };
 
   const sendMessage = async () => {
@@ -1623,41 +1762,58 @@ export default function ChatScreen() {
                       activeOpacity={0.9}
                       onPress={() => setShowPickedFullScreen(true)}
                     >
-                      {uri.startsWith('file://') ? (
-                        // Prefer RN Image for local file:// URIs (more reliable on Android)
-                        <Image
-                          source={{ uri }}
-                          style={{ width: '100%', height: 220, borderRadius: 8, backgroundColor: '#111827' }}
-                          onLoadStart={() => {
-                            setPickedImageError(null);
-                            console.log('[Preview][image-rn] load start');
-                          }}
-                          onLoad={() => console.log('[Preview][image-rn] load success')}
-                          onError={() => {
-                            console.warn('[Preview][image-rn] load error');
-                            setPickedImageError('rn-image load error');
-                          }}
-                          resizeMode="cover"
-                        />
-                      ) : (
-                        // Use ExpoImage for http(s) where decoding/caching is beneficial
-                        <ExpoImage
-                          source={{ uri }}
-                          style={{ width: '100%', height: 220, borderRadius: 8, backgroundColor: '#111827' }}
-                          contentFit="cover"
-                          onLoadStart={() => {
-                            setPickedImageError(null);
-                            console.log('[Preview][image-expo] load start');
-                          }}
-                          onLoad={() => {
-                            console.log('[Preview][image-expo] load success');
-                          }}
-                          onError={() => {
-                            console.warn('[Preview][image-expo] load error');
-                            setPickedImageError('expo-image load error');
-                          }}
-                        />
-                      )}
+                      <View style={{ width: '100%', height: 220, borderRadius: 8, position: 'relative' }}>
+                        {uri.startsWith('file://') ? (
+                          // Prefer RN Image for local file:// URIs (more reliable on Android)
+                          <Image
+                            source={{ uri }}
+                            style={{ width: '100%', height: '100%', borderRadius: 8, backgroundColor: '#111827' }}
+                            onLoadStart={() => {
+                              setPickedImageError(null);
+                              setIsPreviewLoading(true);
+                              console.log('[Preview][image-rn] load start');
+                            }}
+                            onLoad={() => {
+                              setIsPreviewLoading(false);
+                              console.log('[Preview][image-rn] load success');
+                            }}
+                            onLoadEnd={() => setIsPreviewLoading(false)}
+                            onError={() => {
+                              setIsPreviewLoading(false);
+                              console.warn('[Preview][image-rn] load error');
+                              setPickedImageError('rn-image load error');
+                            }}
+                            resizeMode="cover"
+                          />
+                        ) : (
+                          // Use ExpoImage for http(s) where decoding/caching is beneficial
+                          <ExpoImage
+                            source={{ uri }}
+                            style={{ width: '100%', height: '100%', borderRadius: 8, backgroundColor: '#111827' }}
+                            contentFit="cover"
+                            onLoadStart={() => {
+                              setPickedImageError(null);
+                              setIsPreviewLoading(true);
+                              console.log('[Preview][image-expo] load start');
+                            }}
+                            onLoad={() => {
+                              setIsPreviewLoading(false);
+                              console.log('[Preview][image-expo] load success');
+                            }}
+                            onError={() => {
+                              setIsPreviewLoading(false);
+                              console.warn('[Preview][image-expo] load error');
+                              setPickedImageError('expo-image load error');
+                            }}
+                          />
+                        )}
+                        {isPreviewLoading && (
+                          <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center' }}>
+                            <ActivityIndicator size="large" color="#10b981" />
+                            <Text style={{ marginTop: 6, color: isDark ? '#e5e7eb' : '#374151' }}>Loading preview...</Text>
+                          </View>
+                        )}
+                      </View>
                     </TouchableOpacity>
                   ) : (
                     <TouchableOpacity activeOpacity={0.9} onPress={() => setShowPickedFullScreen(true)}>
