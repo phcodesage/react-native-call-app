@@ -19,6 +19,8 @@ import {
   Alert,
   FlatList,
   KeyboardAvoidingView,
+  Image,
+  Linking,
   Modal,
   Platform,
   InteractionManager,
@@ -126,6 +128,8 @@ export default function ChatScreen() {
   const [uploadProgressPct, setUploadProgressPct] = useState<number>(0);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [showPickedFullScreen, setShowPickedFullScreen] = useState(false);
+  const [pickedImageError, setPickedImageError] = useState<string | null>(null);
+  const [pickedVideoError, setPickedVideoError] = useState<string | null>(null);
   const { applySelectedColor, resetBgColor } = useChangeColorActions({ 
     socketRef,
     roomId: roomId as string,
@@ -1570,42 +1574,114 @@ export default function ChatScreen() {
               </View>
             ) : null}
 
-            {/* Inline preview for images/videos */}
-            {pickedFile && (
-              (() => {
-                const isImage = isImageLike(pickedFile.type, pickedFile.name, pickedFile.uri);
-                const isVideo = isVideoLike(pickedFile.type, pickedFile.name, pickedFile.uri);
-                if (!isImage && !isVideo) return null;
-                console.log('[Preview] isImage?', isImage, 'isVideo?', isVideo);
+            {/* Inline preview for images/videos with logging and fallbacks */}
+            {pickedFile && (() => {
+              const isImage = isImageLike(pickedFile.type, pickedFile.name, pickedFile.uri);
+              const isVideo = isVideoLike(pickedFile.type, pickedFile.name, pickedFile.uri);
+              const uri = pickedFile.uri || '';
+              const scheme = uri.split(':')[0];
+              const previewable = uri.startsWith('file://') || uri.startsWith('http://') || uri.startsWith('https://');
+              console.log('[Preview] candidate', {
+                name: pickedFile.name,
+                type: pickedFile.type,
+                size: pickedFile.size,
+                uriPrefix: uri.slice(0, 24),
+                scheme,
+                isImage,
+                isVideo,
+                previewable,
+              });
+              if (!isImage && !isVideo) return null;
+
+              if (!previewable) {
+                console.log('[Preview] non-previewable scheme, showing fallback UI');
                 return (
-                  <View style={{ marginTop: 12 }}>
-                    {isImage ? (
-                      <TouchableOpacity
-                        activeOpacity={0.9}
-                        onPress={() => setShowPickedFullScreen(true)}
-                      >
-                        <ExpoImage
-                          source={{ uri: pickedFile.uri }}
-                          style={{ width: '100%', height: 220, borderRadius: 8 }}
-                          contentFit="cover"
-                        />
-                      </TouchableOpacity>
-                    ) : (
-                      <TouchableOpacity activeOpacity={0.9} onPress={() => setShowPickedFullScreen(true)}>
-                        <Video
-                          source={{ uri: pickedFile.uri }}
-                          style={{ width: '100%', height: 240, borderRadius: 8, backgroundColor: '#000' }}
-                          useNativeControls
-                          resizeMode={ResizeMode.CONTAIN}
-                          shouldPlay={false}
-                          isLooping={false}
-                        />
-                      </TouchableOpacity>
-                    )}
+                  <View style={{ marginTop: 12, padding: 12, borderRadius: 8, backgroundColor: isDark ? '#111827' : '#f3f4f6' }}>
+                    <Text style={{ color: isDark ? '#e5e7eb' : '#374151', marginBottom: 8 }}>
+                      Inline preview not available for selected file source.
+                    </Text>
+                    <TouchableOpacity
+                      onPress={() => Linking.openURL(uri).catch(() => {})}
+                      style={{ alignSelf: 'flex-start' }}
+                    >
+                      <Text style={{ color: '#2563EB', fontWeight: '600' }}>Open to preview</Text>
+                    </TouchableOpacity>
                   </View>
                 );
-              })()
-            )}
+              }
+
+              return (
+                <View
+                  style={{ marginTop: 12, width: '100%', alignSelf: 'stretch' }}
+                  onLayout={(e) => {
+                    const { width, height } = e.nativeEvent.layout;
+                    console.log('[Preview] container layout', { width, height });
+                  }}
+                >
+                  {isImage ? (
+                    <TouchableOpacity
+                      activeOpacity={0.9}
+                      onPress={() => setShowPickedFullScreen(true)}
+                    >
+                      {uri.startsWith('file://') ? (
+                        // Prefer RN Image for local file:// URIs (more reliable on Android)
+                        <Image
+                          source={{ uri }}
+                          style={{ width: '100%', height: 220, borderRadius: 8, backgroundColor: '#111827' }}
+                          onLoadStart={() => {
+                            setPickedImageError(null);
+                            console.log('[Preview][image-rn] load start');
+                          }}
+                          onLoad={() => console.log('[Preview][image-rn] load success')}
+                          onError={() => {
+                            console.warn('[Preview][image-rn] load error');
+                            setPickedImageError('rn-image load error');
+                          }}
+                          resizeMode="cover"
+                        />
+                      ) : (
+                        // Use ExpoImage for http(s) where decoding/caching is beneficial
+                        <ExpoImage
+                          source={{ uri }}
+                          style={{ width: '100%', height: 220, borderRadius: 8, backgroundColor: '#111827' }}
+                          contentFit="cover"
+                          onLoadStart={() => {
+                            setPickedImageError(null);
+                            console.log('[Preview][image-expo] load start');
+                          }}
+                          onLoad={() => {
+                            console.log('[Preview][image-expo] load success');
+                          }}
+                          onError={() => {
+                            console.warn('[Preview][image-expo] load error');
+                            setPickedImageError('expo-image load error');
+                          }}
+                        />
+                      )}
+                    </TouchableOpacity>
+                  ) : (
+                    <TouchableOpacity activeOpacity={0.9} onPress={() => setShowPickedFullScreen(true)}>
+                      <Video
+                        source={{ uri }}
+                        style={{ width: '100%', height: 240, borderRadius: 8, backgroundColor: '#000' }}
+                        useNativeControls
+                        resizeMode={ResizeMode.CONTAIN}
+                        shouldPlay={false}
+                        isLooping={false}
+                        onError={(e) => {
+                          const msg = (e as any)?.toString?.() || 'video error';
+                          console.warn('[Preview][video] load/play error:', msg);
+                          setPickedVideoError(msg);
+                        }}
+                      />
+                      {pickedVideoError ? (
+                        <Text style={{ color: '#ef4444', marginTop: 6 }}>Video preview failed: {pickedVideoError}</Text>
+                      ) : null}
+                    </TouchableOpacity>
+                  )}
+                </View>
+              );
+            })()}
 
             {uploadError ? (
               <Text style={[styles.modalText, { color: '#ef4444', marginTop: 8 }]}>{uploadError}</Text>
@@ -2211,7 +2287,8 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.25,
     shadowRadius: 4,
     elevation: 5,
-    maxWidth: 300,
+    width: '90%',
+    maxWidth: 420,
   },
   emojiPickerContainer: {
     margin: 20,
