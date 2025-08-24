@@ -397,7 +397,15 @@ export default function HomeScreen() {
       { backgroundColor: theme === 'dark' ? '#1f2937' : '#f9fafb' }
     ]} edges={['top', 'left', 'right']}>
       {/* Header */}
-      <ThemedView style={styles.header}>
+      <ThemedView
+        style={[
+          styles.header,
+          {
+            backgroundColor: theme === 'dark' ? '#111827' : '#ffffff',
+            borderBottomColor: theme === 'dark' ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+          },
+        ]}
+      >
         <View style={styles.headerLeft}>
           <ThemedText type="title" style={styles.headerTitle}>Contacts</ThemedText>
           {user ? (
@@ -527,7 +535,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingVertical: 16,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(0, 0, 0, 0.1)',
   },
   headerLeft: {
     flex: 1,

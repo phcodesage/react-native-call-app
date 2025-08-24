@@ -156,6 +156,50 @@ export default function ChatScreen() {
     }
     return null;
   };
+
+  const handleIncomingFileMessage = (data: any) => {
+    try {
+      // Ignore own echo
+      if (data?.from && user?.username && data.from === user.username) return;
+      console.log('[FileMessage][incoming] raw payload:', data);
+      const tsInfo = {
+        timestamp: data?.timestamp,
+        server_timestamp: data?.server_timestamp,
+        server_ts: data?.server_ts,
+        sent_at: data?.sent_at,
+        created_at: data?.created_at,
+        message_id: data?.message_id,
+        client_id: data?.client_id,
+      };
+      console.log('[FileMessage][incoming] ts candidates:', tsInfo);
+      const iso = pickTimestampISO(data);
+      console.log('[FileMessage][incoming] picked ISO:', iso);
+      const newMsg: Message = {
+        message_id: typeof data?.message_id === 'number' ? data.message_id : parseTimestampSafe(iso),
+        sender: data?.sender || data?.from || 'unknown',
+        timestamp: iso,
+        type: 'file',
+        file_id: data?.file_id,
+        file_name: data?.file_name,
+        file_type: data?.file_type,
+        file_size: data?.file_size,
+        file_url: data?.file_url,
+        status: data?.status || 'delivered',
+      };
+
+      setMessages(prev => {
+        if (prev.some(msg => msg.message_id === newMsg.message_id)) return prev;
+        const updated = [...prev, newMsg];
+        updated.sort((a, b) => parseTimestampSafe(a.timestamp) - parseTimestampSafe(b.timestamp));
+        return updated;
+      });
+
+      if (!isAtBottom) setUnreadCount(c => c + 1);
+      if (isAtBottom) setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 50);
+    } catch (e) {
+      console.error('Error handling file_message:', e);
+    }
+  };
   const rgbToHex = (r: number, g: number, b: number) => {
     const toHex = (n: number) => clamp255(n).toString(16).padStart(2, '0');
     return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
@@ -512,6 +556,12 @@ export default function ChatScreen() {
       handleIncomingAudioMessage(data);
     });
 
+    // Listen for incoming file messages
+    socket.on('file_message', (data: any) => {
+      console.log('[FileMessage][socket] event received:', data);
+      handleIncomingFileMessage(data);
+    });
+
     socket.on('receive_reaction', (data: any) => {
       console.log('Received reaction for message id:', data?.message_id);
       handleIncomingReaction(data);
@@ -575,11 +625,12 @@ export default function ChatScreen() {
   };
 
   const handleIncomingAudioMessage = (data: any) => {
+    const iso = pickTimestampISO(data);
     const newMessage: Message = {
-      message_id: data.message_id,
+      message_id: typeof data?.message_id === 'number' ? data.message_id : parseTimestampSafe(iso),
       sender: data.from,
       message: '',
-      timestamp: data.timestamp ? new Date(data.timestamp).toISOString() : new Date().toISOString(),
+      timestamp: iso,
       type: 'audio',
       file_url: data.blob,
       audio_data: data.duration ? data.duration.toString() : '30',
@@ -601,11 +652,24 @@ export default function ChatScreen() {
   const handleIncomingMessage = (data: any) => {
     // Extra guard: ignore own echoes here as well
     if (data?.from && user?.username && data.from === user.username) return;
+    console.log('[Chat][incoming] raw payload:', data);
+    const chatTsInfo = {
+      timestamp: data?.timestamp,
+      server_timestamp: data?.server_timestamp,
+      server_ts: data?.server_ts,
+      sent_at: data?.sent_at,
+      created_at: data?.created_at,
+      message_id: data?.message_id,
+      client_id: data?.client_id,
+    };
+    console.log('[Chat][incoming] ts candidates:', chatTsInfo);
+    const iso = pickTimestampISO(data);
+    console.log('[Chat][incoming] picked ISO:', iso);
     const newMessage: Message = {
-      message_id: data.message_id,
+      message_id: typeof data?.message_id === 'number' ? data.message_id : parseTimestampSafe(iso),
       sender: data.from,
       content: data.message,
-      timestamp: data.timestamp,
+      timestamp: iso,
       type: 'text',
       reply_content: data.reply_content,
       reply_sender: data.reply_sender,
@@ -1031,6 +1095,52 @@ export default function ChatScreen() {
       if (isFinite(p)) return p;
     }
     return Date.now();
+  };
+
+  // Parses timestamps and normalizes fractional seconds to milliseconds.
+  // Fixes malformed timezone strings like "+00:00Z" by removing the extra 'Z' when an offset exists.
+  // For naive ISO strings (no timezone), parse as local time to match server/local expectations.
+  const parseTimestampPreferUTC = (value: any): number => {
+    if (typeof value === 'number' && isFinite(value)) return value;
+    if (typeof value === 'string') {
+      // Truncate fractional seconds to milliseconds for JS Date.parse while preserving timezone if present
+      const m = value.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d+))?(.*)$/);
+      if (m) {
+        const base = m[1];
+        const frac = m[2] ? m[2].slice(0, 3) : undefined;
+        let tail = m[3] || '';
+        // If tail has both an explicit offset and a trailing Z, drop the Z (e.g., "+00:00Z" -> "+00:00")
+        if (/[+-]\d{2}:?\d{2}Z$/.test(tail)) {
+          tail = tail.replace(/Z$/, '');
+        }
+        const normalized = frac ? `${base}.${frac}${tail}` : `${base}${tail}`;
+        const p = Date.parse(normalized);
+        if (isFinite(p)) return p;
+      }
+      // Fallback to normal parse
+      const p2 = Date.parse(value);
+      if (isFinite(p2)) return p2;
+    }
+    return Date.now();
+  };
+
+  // Normalize various possible timestamp fields into a consistent ISO string.
+  const pickTimestampISO = (data: any): string => {
+    const candidates = [
+      data?.timestamp,
+      data?.server_timestamp,
+      data?.server_ts,
+      data?.sent_at,
+      data?.created_at,
+      data?.message_id,
+      data?.client_id,
+    ];
+    for (const c of candidates) {
+      if (c === undefined || c === null) continue;
+      const ms = parseTimestampPreferUTC(c);
+      if (Number.isFinite(ms)) return new Date(ms).toISOString();
+    }
+    return new Date().toISOString();
   };
 
   if (isLoading) {
@@ -1594,6 +1704,21 @@ export default function ChatScreen() {
                         status: 'sent',
                       };
                       setMessages(prev => [...prev, fileMsg]);
+                      // Notify server via socket so other clients (e.g., web) receive the file message
+                      if (socketRef.current) {
+                        socketRef.current.emit('send_file', {
+                          room: roomId,
+                          from: user.username,
+                          token: token,
+                          file_id: result.file_id,
+                          file_name: result.file_name,
+                          file_type: result.file_type,
+                          file_size: result.file_size,
+                          file_url: result.file_url,
+                          timestamp: isoTs,
+                          client_id: localTs,
+                        });
+                      }
                       setShowFilePreviewModal(false);
                       setPickedFile(null);
                       setUploadProgressPct(0);

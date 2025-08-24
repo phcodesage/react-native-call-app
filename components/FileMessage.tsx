@@ -184,18 +184,19 @@ export default function FileMessage({
             {formatFileSize(file_size)}
           </Text>
         </View>
-
-        <TouchableOpacity
-          style={[styles.downloadButton, isDark && styles.downloadButtonDark]}
-          onPress={downloadFile}
-          disabled={isDownloading}
-        >
-          {isDownloading ? (
-            <Ionicons name="hourglass" size={16} color={isDark ? '#9CA3AF' : '#6B7280'} />
-          ) : (
-            <Ionicons name="download" size={16} color={isDark ? '#9CA3AF' : '#6B7280'} />
-          )}
-        </TouchableOpacity>
+        {!isOutgoing && (
+          <TouchableOpacity
+            style={[styles.downloadButton, isDark && styles.downloadButtonDark]}
+            onPress={downloadFile}
+            disabled={isDownloading}
+          >
+            {isDownloading ? (
+              <Ionicons name="hourglass" size={16} color={isDark ? '#9CA3AF' : '#6B7280'} />
+            ) : (
+              <Ionicons name="download" size={16} color={isDark ? '#9CA3AF' : '#6B7280'} />
+            )}
+          </TouchableOpacity>
+        )}
       </View>
 
       {/* Full Screen Preview Modal */}
@@ -223,14 +224,16 @@ export default function FileMessage({
             <Text style={styles.fullScreenFileName} numberOfLines={2}>
               {file_name}
             </Text>
-            <TouchableOpacity
-              style={styles.fullScreenDownloadButton}
-              onPress={downloadFile}
-              disabled={isDownloading}
-            >
-              <Ionicons name="download" size={20} color="white" />
-              <Text style={styles.downloadButtonText}>Download</Text>
-            </TouchableOpacity>
+            {!isOutgoing && (
+              <TouchableOpacity
+                style={styles.fullScreenDownloadButton}
+                onPress={downloadFile}
+                disabled={isDownloading}
+              >
+                <Ionicons name="download" size={20} color="white" />
+                <Text style={styles.downloadButtonText}>Download</Text>
+              </TouchableOpacity>
+            )}
           </View>
         </View>
       </Modal>
