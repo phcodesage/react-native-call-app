@@ -146,23 +146,14 @@ export default function FileMessage({
     }
     
     console.log('[FileMessage] rendering doc icon');
-    // For other file types, show icon and name
+    // For other file types, show icon only here; filename will be rendered in the common meta section below
     return (
       <TouchableOpacity style={styles.documentContainer} onPress={openFullScreen}>
         <Ionicons
           name={getFileIcon(file_type) as any}
-          size={isPreview ? 60 : 32}
+          size={isPreview ? 60 : 48}
           color={isDark ? '#9CA3AF' : '#6B7280'}
         />
-        <Text
-          style={[
-            isPreview ? styles.fileNameLarge : styles.fileNameSmall,
-            isDark && styles.fileNameDark,
-          ]}
-          numberOfLines={2}
-        >
-          {file_name}
-        </Text>
       </TouchableOpacity>
     );
   };
@@ -174,29 +165,34 @@ export default function FileMessage({
         isOutgoing ? styles.outgoingContainer : styles.incomingContainer,
         isDark && styles.containerDark,
       ]}>
-        {renderFileContent()}
-        
-        <View style={styles.fileInfo}>
-          <Text style={[styles.fileName, isDark && styles.fileNameDark]} numberOfLines={1}>
-            {file_name}
-          </Text>
-          <Text style={[styles.fileSize, isDark && styles.fileSizeDark]}>
-            {formatFileSize(file_size)}
-          </Text>
+        <View style={styles.previewWrapper}>
+          {renderFileContent()}
         </View>
-        {!isOutgoing && (
-          <TouchableOpacity
-            style={[styles.downloadButton, isDark && styles.downloadButtonDark]}
-            onPress={downloadFile}
-            disabled={isDownloading}
-          >
-            {isDownloading ? (
-              <Ionicons name="hourglass" size={16} color={isDark ? '#9CA3AF' : '#6B7280'} />
-            ) : (
-              <Ionicons name="download" size={16} color={isDark ? '#9CA3AF' : '#6B7280'} />
-            )}
-          </TouchableOpacity>
-        )}
+
+        <View style={styles.metaSection}>
+          {!!file_name && (
+            <Text
+              style={[styles.fileTitle, isDark && styles.fileNameDark]}
+              numberOfLines={1}
+              ellipsizeMode="tail"
+            >
+              {file_name}
+            </Text>
+          )}
+          {!!file_size && (
+            <Text style={[styles.fileSize, isDark && styles.fileSizeDark]}>
+              {formatFileSize(file_size)}
+            </Text>
+          )}
+
+          {!isOutgoing && (
+            <TouchableOpacity onPress={downloadFile} disabled={isDownloading}>
+              <Text style={[styles.downloadLink, isDark && styles.downloadLinkDark]}>
+                {isDownloading ? 'Downloading…' : 'Download'}
+              </Text>
+            </TouchableOpacity>
+          )}
+        </View>
       </View>
 
       {/* Full Screen Preview Modal */}
@@ -245,8 +241,8 @@ const { width, height } = Dimensions.get('window');
 
 const styles = StyleSheet.create({
   container: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: 'column',
+    alignItems: 'stretch',
     padding: 12,
     borderRadius: 12,
     marginVertical: 2,
@@ -280,9 +276,21 @@ const styles = StyleSheet.create({
     marginRight: 12,
     minWidth: 60,
   },
+  previewWrapper: {
+    marginBottom: 6,
+  },
+  metaSection: {
+    width: '100%',
+  },
   fileInfo: {
     flex: 1,
     marginRight: 8,
+  },
+  fileTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#111827',
+    marginBottom: 2,
   },
   fileName: {
     fontSize: 14,
@@ -313,6 +321,15 @@ const styles = StyleSheet.create({
   },
   fileSizeDark: {
     color: '#9CA3AF',
+  },
+  downloadLink: {
+    marginTop: 6,
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#2563EB',
+  },
+  downloadLinkDark: {
+    color: '#93C5FD',
   },
   downloadButton: {
     padding: 8,
