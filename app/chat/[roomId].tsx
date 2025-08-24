@@ -1570,7 +1570,7 @@ export default function ChatScreen() {
               <View style={{ marginTop: 8 }}>
                 <Text style={[styles.modalText, { color: isDark ? '#e5e7eb' : '#374151' }]}>Name: {pickedFile.name}</Text>
                 <Text style={[styles.modalText, { color: isDark ? '#9ca3af' : '#6b7280' }]}>Type: {pickedFile.type}</Text>
-                <Text style={[styles.modalText, { color: isDark ? '#9ca3af' : '#6b7280' }]}>Size: {Math.round((pickedFile.size || 0) / 1024)} KB</Text>
+                <Text style={[styles.modalText, { color: isDark ? '#9ca3af' : '#6b7280' }]}>Size: {((pickedFile.size || 0) / (1024 * 1024)).toFixed(2)} MB</Text>
               </View>
             ) : null}
 
@@ -1690,7 +1690,7 @@ export default function ChatScreen() {
             {isUploadingFile ? (
               <View style={{ marginTop: 12, alignItems: 'center' }}>
                 <ActivityIndicator size="large" color="#10b981" />
-                <Text style={{ marginTop: 8, color: isDark ? '#e5e7eb' : '#374151' }}>Uploading... {uploadProgressPct}%</Text>
+                <Text style={{ marginTop: 8, color: isDark ? '#e5e7eb' : '#374151' }}>Sending... {Math.max(0, Math.min(100, uploadProgressPct))}%</Text>
                 <TouchableOpacity
                   style={[styles.modalCloseButton, { backgroundColor: '#ef4444', marginTop: 12 }]}
                   onPress={() => {
@@ -1698,7 +1698,7 @@ export default function ChatScreen() {
                     setIsUploadingFile(false);
                   }}
                 >
-                  <Text style={styles.modalCloseButtonText}>Cancel Upload</Text>
+                  <Text style={styles.modalCloseButtonText}>Cancel</Text>
                 </TouchableOpacity>
               </View>
             ) : (
@@ -1757,7 +1757,8 @@ export default function ChatScreen() {
                         user.username,
                         token,
                         (p) => {
-                          setUploadProgressPct(p.percentage);
+                          const pct = Math.max(0, Math.min(100, p.percentage));
+                          setUploadProgressPct(pct);
                           if (p.percentage % 5 === 0) {
                             console.log('[Upload] progress:', p);
                           }

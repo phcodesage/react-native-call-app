@@ -90,10 +90,14 @@ export class FileUploadService {
 
       xhr.upload.onprogress = (event) => {
         if (event.lengthComputable && onProgress) {
+          const loaded = Math.max(0, Math.min(event.loaded, event.total || event.loaded));
+          const total = Math.max(loaded, event.total || loaded);
+          const pct = total > 0 ? Math.round((loaded / total) * 100) : 0;
+          const clampedPct = Math.max(0, Math.min(100, pct));
           const progress: UploadProgress = {
-            loaded: event.loaded,
-            total: event.total,
-            percentage: Math.round((event.loaded / event.total) * 100),
+            loaded,
+            total,
+            percentage: clampedPct,
           };
           onProgress(progress);
           if (progress.percentage % 10 === 0) {
@@ -196,10 +200,14 @@ export class FileUploadService {
         token,
         (chunkProgress) => {
           if (onProgress) {
+            const loadedSoFar = (chunkIndex * CHUNK_SIZE) + chunkProgress.loaded;
+            const clampedLoaded = Math.min(fileData.size, Math.max(0, loadedSoFar));
+            const pct = fileData.size > 0 ? Math.round((clampedLoaded / fileData.size) * 100) : 0;
+            const clampedPct = Math.max(0, Math.min(100, pct));
             const overallProgress: UploadProgress = {
-              loaded: (chunkIndex * CHUNK_SIZE) + chunkProgress.loaded,
+              loaded: clampedLoaded,
               total: fileData.size,
-              percentage: Math.round(((chunkIndex * CHUNK_SIZE) + chunkProgress.loaded) / fileData.size * 100),
+              percentage: clampedPct,
             };
             onProgress(overallProgress);
             if (overallProgress.percentage % 10 === 0) {
@@ -247,10 +255,14 @@ export class FileUploadService {
 
       xhr.upload.onprogress = (event) => {
         if (event.lengthComputable && onProgress) {
+          const loaded = Math.max(0, Math.min(event.loaded, event.total || event.loaded));
+          const total = Math.max(loaded, event.total || loaded);
+          const pct = total > 0 ? Math.round((loaded / total) * 100) : 0;
+          const clampedPct = Math.max(0, Math.min(100, pct));
           const progress: UploadProgress = {
-            loaded: event.loaded,
-            total: event.total,
-            percentage: Math.round((event.loaded / event.total) * 100),
+            loaded,
+            total,
+            percentage: clampedPct,
           };
           onProgress(progress);
           if (progress.percentage % 10 === 0) {
