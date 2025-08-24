@@ -1,7 +1,51 @@
 import Constants from 'expo-constants';
 
+// Explicit typing for environment configuration to avoid string | undefined
+type EnvConfig = {
+  // API Configuration
+  API_BASE_URL: string;
+  SOCKET_SERVER_URL: string;
+
+  // WebRTC Configuration
+  STUN_SERVER_URL: string;
+  TURN_SERVER_URL: string;
+  TURN_USERNAME: string;
+  TURN_PASSWORD: string;
+
+  // Authentication
+  AUTH_BASE_URL: string;
+  JWT_SECRET_KEY: string;
+  API_KEY: string;
+
+  // Push Notifications
+  EXPO_PUSH_TOKEN: string;
+  FCM_SERVER_KEY: string;
+
+  // Development
+  NODE_ENV: string;
+  DEBUG_MODE: boolean;
+
+  // Database
+  DATABASE_URL: string;
+
+  // Third-party Services
+  TWILIO_ACCOUNT_SID: string;
+  TWILIO_AUTH_TOKEN: string;
+  TWILIO_API_KEY: string;
+  TWILIO_API_SECRET: string;
+
+  // App Configuration
+  APP_NAME: string;
+  APP_VERSION: string;
+
+  // Expo specific
+  IS_DEV: boolean;
+  IS_PREVIEW: boolean;
+  IS_PRODUCTION: boolean;
+};
+
 // Environment configuration
-export const ENV = {
+export const ENV: EnvConfig = {
   // API Configuration
   API_BASE_URL: process.env.EXPO_PUBLIC_API_BASE_URL || 'https://cool.flask-meet.site',
   SOCKET_SERVER_URL: process.env.EXPO_PUBLIC_SOCKET_SERVER_URL || 'https://cool.flask-meet.site',

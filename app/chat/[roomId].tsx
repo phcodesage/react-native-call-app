@@ -76,6 +76,9 @@ export default function ChatScreen() {
   const { token, user } = useAuth();
   const insets = useSafeAreaInsets();
   const flatListRef = useRef<FlatList>(null);
+  // Track dimensions to compute precise bottom offset
+  const contentHeightRef = useRef<number>(0);
+  const listHeightRef = useRef<number>(0);
   const socketRef = useRef<Socket | null>(null);
   const isInitialLoadRef = useRef<boolean>(true);
   const isDark = theme === 'dark';
@@ -217,12 +220,25 @@ export default function ChatScreen() {
     };
   }, []);
 
-  // Scroll helper
+  // Scroll helper (precise)
   const scrollToBottom = (animated: boolean = true) => {
     // Wait for interactions and layout to settle for more reliable scrolling
     InteractionManager.runAfterInteractions(() => {
       requestAnimationFrame(() => {
-        setTimeout(() => flatListRef.current?.scrollToEnd({ animated }), 100);
+        setTimeout(() => {
+          const list = flatListRef.current;
+          const contentH = contentHeightRef.current || 0;
+          const listH = listHeightRef.current || 0;
+          // Add a small fudge factor to account for paddings/margins
+          const fudge = 24;
+          const targetOffset = Math.max(0, contentH - listH + fudge);
+          if (targetOffset > 0 && Number.isFinite(targetOffset)) {
+            list?.scrollToOffset({ offset: targetOffset, animated });
+          } else {
+            // Fallback
+            list?.scrollToEnd({ animated });
+          }
+        }, 80);
       });
     });
   };
@@ -1146,6 +1162,12 @@ export default function ChatScreen() {
           initialNumToRender={12}
           maxToRenderPerBatch={12}
           updateCellsBatchingPeriod={50}
+          onLayout={(e) => {
+            listHeightRef.current = e.nativeEvent.layout.height;
+          }}
+          onContentSizeChange={(w, h) => {
+            contentHeightRef.current = h;
+          }}
           onScroll={(e) => {
             const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
             const paddingToBottom = 40;

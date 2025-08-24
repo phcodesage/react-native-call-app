@@ -3,6 +3,7 @@
   "compilerOptions": {
     "strict": true,
     "skipLibCheck": true,
+    "skipDefaultLibCheck": true,
     "paths": {
       "@/*": [
         "./*"
