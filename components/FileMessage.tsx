@@ -9,12 +9,16 @@ import {
   Alert,
   Linking,
   ActivityIndicator,
+  Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 // Using expo-av for now, will migrate to expo-video in SDK 54
 import { Video, ResizeMode } from 'expo-av';
 import * as FileSystem from 'expo-file-system';
 import { Image as ExpoImage } from 'expo-image';
+import * as Sharing from 'expo-sharing';
+import * as Notifications from 'expo-notifications';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 interface FileMessageProps {
   file_id?: string;
@@ -77,24 +81,148 @@ export default function FileMessage({
     
     try {
       console.log('[FileMessage] downloading', { file_url, file_name });
-      const downloadUri = FileSystem.documentDirectory + file_name;
-      
-      const downloadResult = await FileSystem.downloadAsync(file_url, downloadUri);
-      
-      if (downloadResult.status === 200) {
-        console.log('[FileMessage] downloaded to', downloadResult.uri);
-        // Try to open the downloaded file with the system if possible; otherwise show the saved path
-        try {
-          const opened = await Linking.openURL(downloadResult.uri);
-          if (!opened) {
-            Alert.alert('Success', `File downloaded to: ${downloadResult.uri}`);
+      // Android: save to Downloads with progress notification
+      // iOS: use share sheet
+      if (Platform.OS === 'android') {
+        // Ensure we have (and persist) access to the Downloads directory
+        const getDownloadsDirUri = async (): Promise<string | null> => {
+          const key = 'android_downloads_tree_uri_v1';
+          const saved = await AsyncStorage.getItem(key);
+          if (saved) {
+            console.log('[FileMessage][Android] Using persisted directoryUri:', saved);
+            return saved;
           }
-        } catch {
-          Alert.alert('Success', `File downloaded to: ${downloadResult.uri}`);
+          const perm = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
+          console.log('[FileMessage][Android] SAF permission result:', JSON.stringify(perm));
+          if (!perm.granted || !perm.directoryUri) return null;
+          // Note: Expo persists SAF access for app lifetime; we store the URI for reuse
+          await AsyncStorage.setItem(key, perm.directoryUri);
+          console.log('[FileMessage][Android] Persisted new directoryUri:', perm.directoryUri);
+          return perm.directoryUri;
+        };
+
+        // Ask for notification permission (no-op if already granted) and set channel
+        try {
+          await Notifications.requestPermissionsAsync();
+          // Android: ensure channel exists
+          await Notifications.setNotificationChannelAsync('downloads', {
+            name: 'Downloads',
+            importance: Notifications.AndroidImportance.DEFAULT,
+            vibrationPattern: [200],
+            lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+          });
+          console.log('[FileMessage][Android] Notifications permission/channel ready');
+        } catch {}
+
+        const downloadsUri = await getDownloadsDirUri();
+        if (!downloadsUri) {
+          Alert.alert('Permission required', 'Please select the Downloads folder to save files.');
+          console.warn('[FileMessage][Android] No directoryUri selected for Downloads');
+          return;
+        }
+
+        // Download with progress into cache first
+        const tmpPath = (FileSystem.cacheDirectory || FileSystem.documentDirectory || '') + file_name;
+        console.log('[FileMessage][Android] Temp download path:', tmpPath);
+        let lastNotifId: string | null = null;
+        const downloadResumable = FileSystem.createDownloadResumable(
+          file_url,
+          tmpPath,
+          {},
+          async (progress) => {
+            const pct = Math.floor((progress.totalBytesWritten / Math.max(1, progress.totalBytesExpectedToWrite)) * 100);
+            console.log('[FileMessage][Android] progress', {
+              written: progress.totalBytesWritten,
+              total: progress.totalBytesExpectedToWrite,
+              pct,
+            });
+            try {
+              // Update a progress notification
+              if (!lastNotifId) {
+                const id = await Notifications.scheduleNotificationAsync({
+                  content: {
+                    title: 'Downloading…',
+                    body: `${file_name} (${pct}%)`,
+                  },
+                  trigger: null,
+                });
+                lastNotifId = id;
+              } else {
+                // Cancel and re-issue to simulate update
+                await Notifications.dismissNotificationAsync(lastNotifId);
+                lastNotifId = await Notifications.scheduleNotificationAsync({
+                  content: { title: 'Downloading…', body: `${file_name} (${pct}%)` },
+                  trigger: null,
+                });
+              }
+            } catch {}
+          }
+        );
+
+        const result = await downloadResumable.downloadAsync();
+        console.log('[FileMessage][Android] download result:', result);
+        if (!result || result.status !== 200) throw new Error('Download failed');
+
+        try {
+          const mime = file_type || 'application/octet-stream';
+          const info = await FileSystem.getInfoAsync(result.uri);
+          console.log('[FileMessage][Android] downloaded file info:', info);
+          const base64 = await FileSystem.readAsStringAsync(result.uri, { encoding: FileSystem.EncodingType.Base64 });
+          const destUri = await FileSystem.StorageAccessFramework.createFileAsync(downloadsUri, file_name, mime);
+          console.log('[FileMessage][Android] created destination file:', destUri);
+          await FileSystem.writeAsStringAsync(destUri, base64, { encoding: FileSystem.EncodingType.Base64 });
+          console.log('[FileMessage][Android] wrote file to destination');
+          // Completion notification
+          try {
+            if (lastNotifId) await Notifications.dismissNotificationAsync(lastNotifId);
+            await Notifications.scheduleNotificationAsync({
+              content: { title: 'Download complete', body: `${file_name} saved to Downloads` },
+              trigger: null,
+            });
+          } catch {}
+        } catch (e) {
+          console.warn('[FileMessage][Android] Save to Downloads error', e);
+          Alert.alert('Error', 'Could not save to Downloads folder.');
+        }
+        return;
+      }
+
+      // Always download to a temp path first (iOS/web)
+      const tmpPath = (FileSystem.cacheDirectory || FileSystem.documentDirectory || '') + file_name;
+      console.log('[FileMessage][iOS/web] Temp path:', tmpPath);
+      const { uri: tmpUri, status } = await FileSystem.downloadAsync(file_url, tmpPath);
+
+      if (status !== 200) throw new Error('Download failed');
+
+      if (Platform.OS === 'ios') {
+        try {
+          const canShare = await Sharing.isAvailableAsync();
+          console.log('[FileMessage][iOS] Sharing available:', canShare);
+          if (canShare) {
+            await Sharing.shareAsync(tmpUri, {
+              mimeType: file_type,
+              dialogTitle: 'Save or share file',
+              UTI: undefined,
+            });
+            console.log('[FileMessage][iOS] Share sheet presented');
+          } else {
+            await Linking.openURL(tmpUri);
+            console.log('[FileMessage][iOS] Opened tmp URI');
+          }
+        } catch (e) {
+          console.warn('[FileMessage] iOS share error', e);
+          Alert.alert('Error', 'Could not present share sheet.');
         }
       } else {
-        throw new Error('Download failed');
+        try {
+          await Linking.openURL(file_url);
+          console.log('[FileMessage][web/other] Opened original URL');
+        } catch {
+          Alert.alert('Downloaded', 'File downloaded to temporary location.');
+          console.warn('[FileMessage][web/other] Fallback alert shown');
+        }
       }
+      
     } catch (error) {
       console.error('Error downloading file:', error);
       Alert.alert('Error', 'Failed to download file');
