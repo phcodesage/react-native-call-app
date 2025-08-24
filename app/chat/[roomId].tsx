@@ -1672,27 +1672,53 @@ export default function ChatScreen() {
             paddingBottom: 12
           }
         ]}>
-          {/* Actions Toggle on the left */}
-          <TouchableOpacity
-            style={[
-              styles.actionsToggleButton,
-              { backgroundColor: showActions ? '#8b5cf6' : (isDark ? '#4b5563' : '#d1d5db') }
-            ]}
-            onPress={() => setShowActions(!showActions)}
-          >
-            <Ionicons 
-              name={showActions ? "chevron-down" : "add"} 
-              size={20} 
-              color={showActions ? "white" : (isDark ? '#9ca3af' : '#6b7280')} 
-            />
-          </TouchableOpacity>
-          {/* Emoji Button */}
-          <TouchableOpacity
-            style={[styles.emojiButton, { backgroundColor: isDark ? '#374151' : '#e5e7eb' }]}
-            onPress={() => setShowEmojiPicker(prev => !prev)}
-          >
-            <Ionicons name="happy" size={20} color={isDark ? '#f3f4f6' : '#374151'} />
-          </TouchableOpacity>
+          {newMessage.trim().length === 0 ? (
+            <>
+              {/* Actions Toggle on the left */}
+              <TouchableOpacity
+                style={[
+                  styles.actionsToggleButton,
+                  { backgroundColor: showActions ? '#8b5cf6' : (isDark ? '#4b5563' : '#d1d5db') }
+                ]}
+                onPress={() => setShowActions(!showActions)}
+              >
+                <Ionicons 
+                  name={showActions ? "chevron-down" : "add"} 
+                  size={20} 
+                  color={showActions ? "white" : (isDark ? '#9ca3af' : '#6b7280')} 
+                />
+              </TouchableOpacity>
+              {/* Emoji Button */}
+              <TouchableOpacity
+                style={[styles.emojiButton, { backgroundColor: isDark ? '#374151' : '#e5e7eb' }]}
+                onPress={() => setShowEmojiPicker(prev => !prev)}
+              >
+                <Ionicons name="happy" size={20} color={isDark ? '#f3f4f6' : '#374151'} />
+              </TouchableOpacity>
+            </>
+          ) : (
+            <TouchableOpacity
+              style={[
+                styles.clearInputButton,
+                { backgroundColor: isDark ? '#374151' : '#d1d5db' }
+              ]}
+              onPress={() => {
+                setNewMessage('');
+                // also clear typing indicator immediately
+                if (socketRef.current && roomId && user) {
+                  try {
+                    socketRef.current.emit('live_typing', {
+                      room: roomId,
+                      from: user.username,
+                      text: ''
+                    });
+                  } catch {}
+                }
+              }}
+            >
+              <Text style={{ marginLeft: 6, color: isDark ? '#e5e7eb' : '#374151', fontWeight: '600' }}>Clear Input</Text>
+            </TouchableOpacity>
+          )}
           <TextInput
             style={[
               styles.messageInput,
@@ -1710,6 +1736,8 @@ export default function ChatScreen() {
             onChangeText={handleTextChange}
             onKeyPress={handleKeyPress}
             onSubmitEditing={sendMessage}
+            returnKeyType="send"
+            enablesReturnKeyAutomatically
             placeholder="Type a message..."
             placeholderTextColor={isDark ? '#9ca3af' : '#6b7280'}
             multiline
@@ -2605,6 +2633,16 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     marginRight: 8,
+  },
+  clearInputButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 10,
+    height: 36,
+    borderRadius: 18,
+    marginRight: 8,
+    gap: 4,
   },
   modalOverlay: {
     flex: 1,
