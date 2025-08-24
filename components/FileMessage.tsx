@@ -8,6 +8,7 @@ import {
   Dimensions,
   Alert,
   Linking,
+  ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 // Using expo-av for now, will migrate to expo-video in SDK 54
@@ -40,6 +41,9 @@ export default function FileMessage({
 }: FileMessageProps) {
   const [showFullScreen, setShowFullScreen] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
+  // Loading states for media previews
+  const [thumbLoading, setThumbLoading] = useState(false);
+  const [fullLoading, setFullLoading] = useState(false);
 
   const formatFileSize = (bytes?: number): string => {
     if (!bytes || bytes === 0) return '0 Bytes';
@@ -121,11 +125,22 @@ export default function FileMessage({
       console.log('[FileMessage] rendering image', { isPreview });
       return (
         <TouchableOpacity onPress={isPreview ? undefined : openFullScreen}>
-          <ExpoImage
-            source={{ uri: file_url }}
-            style={isPreview ? styles.fullScreenImage : styles.thumbnailImage}
-            contentFit="cover"
-          />
+          <View style={[styles.mediaWrapper, isPreview ? styles.fullMediaWrapper : styles.thumbMediaWrapper]}>
+            <ExpoImage
+              source={{ uri: file_url }}
+              style={isPreview ? styles.fullScreenImage : styles.thumbnailImage}
+              contentFit="cover"
+              onLoadStart={() => (isPreview ? setFullLoading(true) : setThumbLoading(true))}
+              onLoadEnd={() => (isPreview ? setFullLoading(false) : setThumbLoading(false))}
+              onError={() => (isPreview ? setFullLoading(false) : setThumbLoading(false))}
+              transition={150}
+            />
+            {(isPreview ? fullLoading : thumbLoading) && (
+              <View style={styles.spinnerOverlay}>
+                <ActivityIndicator size={isPreview ? 'large' : 'small'} color="#FFFFFF" />
+              </View>
+            )}
+          </View>
         </TouchableOpacity>
       );
     }
@@ -134,13 +149,23 @@ export default function FileMessage({
       console.log('[FileMessage] rendering video', { isPreview });
       return (
         <TouchableOpacity onPress={isPreview ? undefined : openFullScreen}>
-          <Video
-            source={{ uri: file_url }}
-            style={isPreview ? styles.fullScreenVideo : styles.thumbnailVideo}
-            useNativeControls={isPreview}
-            resizeMode={ResizeMode.COVER}
-            shouldPlay={isPreview}
-          />
+          <View style={[styles.mediaWrapper, isPreview ? styles.fullMediaWrapper : styles.thumbMediaWrapper]}>
+            <Video
+              source={{ uri: file_url }}
+              style={isPreview ? styles.fullScreenVideo : styles.thumbnailVideo}
+              useNativeControls={isPreview}
+              resizeMode={ResizeMode.COVER}
+              shouldPlay={isPreview}
+              onLoadStart={() => (isPreview ? setFullLoading(true) : setThumbLoading(true))}
+              onLoad={() => (isPreview ? setFullLoading(false) : setThumbLoading(false))}
+              onError={() => (isPreview ? setFullLoading(false) : setThumbLoading(false))}
+            />
+            {(isPreview ? fullLoading : thumbLoading) && (
+              <View style={styles.spinnerOverlay}>
+                <ActivityIndicator size={isPreview ? 'large' : 'small'} color="#FFFFFF" />
+              </View>
+            )}
+          </View>
         </TouchableOpacity>
       );
     }
@@ -368,6 +393,30 @@ const styles = StyleSheet.create({
   fullScreenVideo: {
     width: width - 40,
     height: height * 0.7,
+    borderRadius: 8,
+  },
+  mediaWrapper: {
+    position: 'relative',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  thumbMediaWrapper: {
+    width: 60,
+    height: 60,
+  },
+  fullMediaWrapper: {
+    width: width - 40,
+    height: height * 0.7,
+  },
+  spinnerOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0,0,0,0.25)',
+    justifyContent: 'center',
+    alignItems: 'center',
     borderRadius: 8,
   },
   fullScreenFooter: {

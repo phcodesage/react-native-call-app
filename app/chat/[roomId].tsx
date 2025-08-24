@@ -1040,6 +1040,7 @@ export default function ChatScreen() {
       room: raw?.room,
       client_id: raw?.client_id && Number(raw.client_id),
       reactions: raw?.reactions || {},
+      message_class: raw?.message_class,
     };
 
     // File mapping: support multiple backend shapes
@@ -1058,6 +1059,26 @@ export default function ChatScreen() {
       msg.file_size = typeof fileSize === 'string' ? parseInt(fileSize) : fileSize;
       msg.file_id = fileId;
     }
+    // Fallback content for known event classes if backend omitted content
+    if ((!msg.content || msg.content.length === 0) && msg.message_class) {
+      if (msg.message_class === 'notification') {
+        msg.type = 'text';
+        msg.content = `${msg.sender || 'Someone'} sent you a notification!`;
+      } else if (msg.message_class === 'color') {
+        msg.type = 'text';
+        // Try to format a helpful message based on available fields
+        const color = (raw?.color || raw?.selected_color || raw?.new_color);
+        const action = (raw?.action || '').toString().toLowerCase();
+        if (action === 'reset' || color === null) {
+          msg.content = `${msg.sender || 'Someone'} resets its bg color`;
+        } else if (color) {
+          msg.content = `${msg.sender || 'Someone'} changed your bg color`;
+        } else {
+          msg.content = `${msg.sender || 'Someone'} updated the color`;
+        }
+      }
+    }
+
     return msg;
   };
 
