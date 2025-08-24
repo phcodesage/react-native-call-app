@@ -40,8 +40,11 @@ import ChangeColorModal from '@/components/change-color/ChangeColorModal';
 import { useChangeColorActions } from '@/components/change-color/useChangeColor';
 import { useVoiceRecorderActions } from '@/components/voice-recorder/useVoiceRecorder';
 import * as DocumentPicker from 'expo-document-picker';
+import * as ImagePicker from 'expo-image-picker';
 import { FileUploadService } from '@/services/FileUploadService';
 import { Image as ExpoImage } from 'expo-image';
+import { CameraView, useCameraPermissions } from 'expo-camera';
+import * as FileSystem from 'expo-file-system';
 
 const API_BASE_URL = ENV.API_BASE_URL;
 const SOCKET_URL = ENV.SOCKET_SERVER_URL;
@@ -83,6 +86,8 @@ export default function ChatScreen() {
   const listHeightRef = useRef<number>(0);
   const socketRef = useRef<Socket | null>(null);
   const isInitialLoadRef = useRef<boolean>(true);
+  const isMountedRef = useRef<boolean>(true);
+  const captureInProgressRef = useRef<boolean>(false);
   const isDark = theme === 'dark';
   // Refs used by call flow (must be declared before useCallFunctions)
   const callTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -118,6 +123,14 @@ export default function ChatScreen() {
   const [actionsContainerHeight, setActionsContainerHeight] = useState<number>(0);
   const INPUT_LINE_HEIGHT = 20; // should match visual line height
   const INPUT_VERTICAL_PADDING = 20; // paddingVertical 10 (top) + 10 (bottom)
+
+  // Track mount to avoid setState after unmount (can happen when returning from camera)
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
   const MAX_INPUT_HEIGHT = INPUT_LINE_HEIGHT * 2 + INPUT_VERTICAL_PADDING; // two lines max
   // Scrolling state for unread indicator
   const [isAtBottom, setIsAtBottom] = useState(true);
@@ -128,9 +141,16 @@ export default function ChatScreen() {
   const [uploadProgressPct, setUploadProgressPct] = useState<number>(0);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [showPickedFullScreen, setShowPickedFullScreen] = useState(false);
+  const [hasPendingCapture, setHasPendingCapture] = useState(false);
+  const [isPickedFromCamera, setIsPickedFromCamera] = useState(false);
   const [pickedImageError, setPickedImageError] = useState<string | null>(null);
   const [pickedVideoError, setPickedVideoError] = useState<string | null>(null);
   const [isPreviewLoading, setIsPreviewLoading] = useState<boolean>(false);
+  // In-app camera state (expo-camera)
+  const [cameraVisible, setCameraVisible] = useState(false);
+  const [cameraFacing, setCameraFacing] = useState<'front' | 'back'>('back');
+  const cameraRef = useRef<CameraView | null>(null);
+  const [cameraPerm, requestCameraPerm] = useCameraPermissions();
   const { applySelectedColor, resetBgColor } = useChangeColorActions({ 
     socketRef,
     roomId: roomId as string,
@@ -1466,6 +1486,111 @@ export default function ChatScreen() {
           </View>
         ) : null}
 
+        {/* Pending capture banner (avoids opening modal immediately after camera) */}
+        {hasPendingCapture && pickedFile ? (
+          <View style={{
+            marginHorizontal: 12,
+            marginBottom: 8,
+            padding: 10,
+            borderRadius: 8,
+            backgroundColor: isDark ? '#1f2937' : '#e5e7eb',
+            borderWidth: 1,
+            borderColor: isDark ? '#374151' : '#d1d5db',
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+          }}>
+            <Text style={{ color: isDark ? '#e5e7eb' : '#111827', flex: 1 }} numberOfLines={1}>
+              Captured: {pickedFile.name}
+            </Text>
+            <TouchableOpacity
+              onPress={() => {
+                if (!isMountedRef.current) return;
+                setHasPendingCapture(false);
+                setShowFilePreviewModal(true);
+              }}
+              style={{
+                paddingHorizontal: 12,
+                paddingVertical: 6,
+                borderRadius: 6,
+                backgroundColor: '#8b5cf6',
+                marginLeft: 8,
+              }}
+            >
+              <Text style={{ color: 'white', fontWeight: '600' }}>Review</Text>
+            </TouchableOpacity>
+          </View>
+        ) : null}
+
+        {/* In-app Camera Modal (expo-camera) */}
+        {cameraVisible ? (
+          <Modal visible transparent={false} animationType="slide" onRequestClose={() => setCameraVisible(false)}>
+            <View style={{ flex: 1, backgroundColor: 'black' }}>
+              <CameraView
+                ref={(ref: CameraView | null) => { cameraRef.current = ref; }}
+                style={{ flex: 1 }}
+                facing={cameraFacing}
+              />
+              {/* Controls overlay */}
+              <View style={{ position: 'absolute', bottom: 32, left: 0, right: 0, paddingHorizontal: 24 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <TouchableOpacity
+                    onPress={() => setCameraVisible(false)}
+                    style={{ width: 48, height: 48, borderRadius: 24, backgroundColor: 'rgba(0,0,0,0.6)', alignItems: 'center', justifyContent: 'center' }}
+                  >
+                    <Ionicons name="close" color="#fff" size={24} />
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={async () => {
+                      try {
+                        if (captureInProgressRef.current) return;
+                        captureInProgressRef.current = true;
+                        const cam = cameraRef.current as any;
+                        if (!cam || !(cam as any).takePictureAsync) {
+                          captureInProgressRef.current = false;
+                          return;
+                        }
+                        const photo = await cam.takePictureAsync({ quality: 0.7, exif: false, skipProcessing: true, base64: false });
+                        if (!photo?.uri) { captureInProgressRef.current = false; return; }
+                        const uri: string = photo.uri;
+                        const uriLast = uri.split('/').pop() || 'capture';
+                        const ext = uriLast.split('?')[0].split('#')[0].split('.').pop()?.toLowerCase();
+                        const name = `capture_${Date.now()}.${ext || 'jpg'}`;
+                        const normExt = ext === 'heic' || ext === 'heif' ? 'jpeg' : (ext === 'jpg' ? 'jpeg' : ext);
+                        const mime = `image/${normExt || 'jpeg'}`;
+                        let size = 0;
+                        try {
+                          const info = await FileSystem.getInfoAsync(uri, { size: true });
+                          if (info && typeof (info as any).size === 'number') size = (info as any).size as number;
+                        } catch {}
+                        const file = { uri, name, type: mime, size };
+                        if (!isMountedRef.current) { captureInProgressRef.current = false; return; }
+                        setCameraVisible(false);
+                        setPickedFile(file);
+                        setHasPendingCapture(true);
+                        setIsPickedFromCamera(true);
+                        captureInProgressRef.current = false;
+                      } catch (err) {
+                        console.warn('[InAppCamera] capture error:', err);
+                        captureInProgressRef.current = false;
+                      }
+                    }}
+                    style={{ width: 72, height: 72, borderRadius: 36, backgroundColor: '#ffffff', alignItems: 'center', justifyContent: 'center' }}
+                  >
+                    <View style={{ width: 60, height: 60, borderRadius: 30, backgroundColor: '#e5e7eb' }} />
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={() => setCameraFacing((prev) => (prev === 'back' ? 'front' : 'back'))}
+                    style={{ width: 48, height: 48, borderRadius: 24, backgroundColor: 'rgba(0,0,0,0.6)', alignItems: 'center', justifyContent: 'center' }}
+                  >
+                    <Ionicons name="camera-reverse-outline" color="#fff" size={24} />
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
+          </Modal>
+        ) : null}
+
         {/* Emoji Bar - inline above input */}
         {showEmojiPicker ? (
           <View
@@ -1621,6 +1746,31 @@ export default function ChatScreen() {
             { backgroundColor: isDark ? '#111827' : '#ffffff', borderTopColor: isDark ? '#374151' : '#e5e7eb' }
           ]}>
             <View style={styles.actionsGrid}>
+              <TouchableOpacity 
+                style={[styles.actionButton, { backgroundColor: '#f59e0b' }]}
+                onPress={async () => {
+                  try {
+                    if (captureInProgressRef.current) return;
+                    setUploadError(null);
+                    if (showActions) setShowActions(false);
+                    // Request in-app camera permission
+                    if (!cameraPerm?.granted) {
+                      const res = await requestCameraPerm();
+                      if (!res?.granted) {
+                        Alert.alert('Permission required', 'Camera permission is needed to take a photo.');
+                        return;
+                      }
+                    }
+                    setCameraVisible(true);
+                  } catch (e) {
+                    Alert.alert('Error', 'Failed to open camera');
+                    console.warn('[InAppCamera] error:', e);
+                  }
+                }}
+              >
+                <Ionicons name="camera" size={16} color="white" />
+                <Text style={styles.actionButtonText}>Camera</Text>
+              </TouchableOpacity>
               <TouchableOpacity 
                 style={[styles.actionButton, { backgroundColor: '#0ea5e9' }]}
                 onPress={async () => {
@@ -1885,24 +2035,34 @@ export default function ChatScreen() {
                   onPress={async () => {
                     try {
                       setUploadError(null);
-                      const result = await DocumentPicker.getDocumentAsync({ multiple: false, copyToCacheDirectory: true, type: '*/*' });
-                      const canceled = (result as any).canceled === true || (result as any).type === 'cancel';
-                      if (canceled) return;
-                      const asset = (result as any).assets?.[0] ?? result;
-                      if (!asset?.uri) return;
-                      const file = {
-                        uri: asset.uri as string,
-                        name: (asset.name as string) || 'file',
-                        type: (asset.mimeType as string) || guessMimeType(asset.name as string, asset.uri as string),
-                        size: Number(asset.size ?? 0),
-                      };
-                      setPickedFile(file);
+                      if (isPickedFromCamera) {
+                        // Retake: open in-app camera instead of document picker
+                        if (!cameraPerm?.granted) {
+                          const res = await requestCameraPerm();
+                          if (!res?.granted) return;
+                        }
+                        setCameraVisible(true);
+                      } else {
+                        const result = await DocumentPicker.getDocumentAsync({ multiple: false, copyToCacheDirectory: true, type: '*/*' });
+                        const canceled = (result as any).canceled === true || (result as any).type === 'cancel';
+                        if (canceled) return;
+                        const asset = (result as any).assets?.[0] ?? result;
+                        if (!asset?.uri) return;
+                        const file = {
+                          uri: asset.uri as string,
+                          name: (asset.name as string) || 'file',
+                          type: (asset.mimeType as string) || guessMimeType(asset.name as string, asset.uri as string),
+                          size: Number(asset.size ?? 0),
+                        };
+                        setPickedFile(file);
+                        setIsPickedFromCamera(false);
+                      }
                     } catch (e) {
-                      Alert.alert('Error', 'Failed to open file picker');
+                      Alert.alert('Error', 'Failed to open picker');
                     }
                   }}
                 >
-                  <Text style={styles.modalCloseButtonText}>Change File</Text>
+                  <Text style={styles.modalCloseButtonText}>{isPickedFromCamera ? 'Retake' : 'Change File'}</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={[styles.modalCloseButton, { backgroundColor: '#6b7280' }]}
