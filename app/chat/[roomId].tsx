@@ -1409,9 +1409,35 @@ export default function ChatScreen() {
     // TODO: implement edit for own messages
     closeContextMenu();
   };
-  const handleDelete = () => {
-    // TODO: implement delete
-    closeContextMenu();
+  const handleDelete = async () => {
+    try {
+      const msg = contextMenuMessage;
+      closeContextMenu();
+      if (!msg || !msg.message_id) return;
+      if (!user?.username) return;
+      if (msg.sender && msg.sender !== user.username) {
+        Alert.alert('Not allowed', 'You can only delete your own messages.');
+        return;
+      }
+
+      // Optimistic UI: remove locally
+      setMessages(prev => prev.filter(m => m.message_id !== msg.message_id));
+      if (selectedMessagePos?.id === msg.message_id) setSelectedMessagePos(null);
+
+      try {
+        await fetch(getApiUrl(`/delete_message/${msg.message_id}?username=${encodeURIComponent(user.username)}`), {
+          method: 'DELETE',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+        });
+      } catch (e) {
+        console.warn('Delete request failed:', e);
+      }
+    } catch (err) {
+      console.warn('Delete handler error:', err);
+    }
   };
   const handleExportClipboard = (withTimestamps: boolean) => {
     // TODO: implement export to clipboard
