@@ -37,6 +37,7 @@ export function useCallFunctions({
   const [isVideoMuted, setIsVideoMuted] = useState(false);
   const [callDuration, setCallDuration] = useState('00:00');
   const webRTCServiceRef = useRef<WebRTCService | null>(null);
+  const callDirectionRef = useRef<'outgoing' | 'incoming' | null>(null);
 
   // Sounds for call states (outgoing only)
   const ringingSoundRef = useRef<Audio.Sound | null>(null);
@@ -116,6 +117,9 @@ export function useCallFunctions({
 
   const showOrUpdateCallNotification = async (title: string, body?: string) => {
     if (Platform.OS !== 'android') return;
+    // Do not show a system notification while user is on the call screen
+    // We only keep a system notification when the call screen isn't visible
+    if (showCallScreen) return;
     try {
       if (notificationIdRef.current) {
         await Notifications.dismissNotificationAsync(notificationIdRef.current);
@@ -132,6 +136,29 @@ export function useCallFunctions({
       });
     } catch (e) {
       console.warn('Failed to present call notification:', e);
+    }
+  };
+
+  const showCallEndedNotification = async (title: string = 'Call ended') => {
+    if (Platform.OS !== 'android') return;
+    // Only show if not on call screen
+    if (showCallScreen) return;
+    try {
+      // Dismiss any ongoing sticky notification first
+      if (notificationIdRef.current) {
+        await Notifications.dismissNotificationAsync(notificationIdRef.current);
+        notificationIdRef.current = null;
+      }
+      await Notifications.scheduleNotificationAsync({
+        content: {
+          title,
+          priority: Notifications.AndroidNotificationPriority.MAX,
+          sticky: false,
+        },
+        trigger: null,
+      });
+    } catch (e) {
+      console.warn('Failed to present call-ended notification:', e);
     }
   };
 
@@ -279,6 +306,8 @@ export function useCallFunctions({
           signal: { type: 'offer', sdp: offer.sdp, callType },
           from: user?.username,
         });
+        // Mark direction as outgoing
+        callDirectionRef.current = 'outgoing';
       }
     } catch (error) {
       console.error('Error starting call:', error);
@@ -318,6 +347,9 @@ export function useCallFunctions({
     } catch (error) {
       console.error('Error initializing WebRTC for incoming call:', error);
     }
+
+    // Mark direction as incoming (we were called)
+    callDirectionRef.current = 'incoming';
 
     setShowIncomingCall(true);
     // Start ringing and show notification for incoming call
@@ -379,6 +411,8 @@ export function useCallFunctions({
   };
 
   const handleCallEnd = () => {
+    // Capture duration from local state for accurate display
+    const duration = callDuration;
     webRTCServiceRef.current?.endCall();
 
     setShowCallScreen(false);
@@ -391,11 +425,33 @@ export function useCallFunctions({
     setIsVideoMuted(false);
     stopCallTimer();
 
+    // Reset throttling state
+    lastNotifUpdateRef.current = 0;
+
     // Always stop ringing on end
     void stopRinging();
+    // Show a one-time 'Call ended' notification only if not on call screen
+    void showCallEndedNotification();
+    // Also ensure any existing sticky is dismissed
     void dismissCallNotification();
 
     if (socketRef.current && roomId) {
+      // Emit call log with duration and direction-specific phrasing
+      const peer = roomId?.split('-').find(n => n !== user?.username) || 'Unknown';
+      let message = '';
+      if (callDirectionRef.current === 'outgoing') {
+        message = `you called ${peer}${duration ? `, duration ${duration}` : ''}`;
+      } else if (callDirectionRef.current === 'incoming') {
+        message = `${peer} called you${duration ? `, duration ${duration}` : ''}`;
+      } else {
+        // Fallback if direction unknown
+        message = `call with ${peer}${duration ? `, duration ${duration}` : ''}`;
+      }
+      socketRef.current.emit('signal', {
+        room: roomId,
+        signal: { type: 'call-log', message },
+        from: user?.username,
+      });
       socketRef.current.emit('signal', {
         room: roomId,
         signal: { type: 'call-ended' },
@@ -427,12 +483,38 @@ export function useCallFunctions({
   };
 
   // While connected, keep the Android notification updated with duration
+  const lastNotifUpdateRef = useRef<number>(0);
   useEffect(() => {
     if (Platform.OS !== 'android') return;
-    if (isCallConnected) {
-      void showOrUpdateCallNotification('On call', `Duration ${callDuration}`);
+    if (!isCallConnected) {
+      // Not connected: ensure sticky is cleared when toggling screens
+      if (notificationIdRef.current) {
+        void Notifications.dismissNotificationAsync(notificationIdRef.current).then(() => {
+          notificationIdRef.current = null;
+        }).catch(() => {});
+      }
+      return;
     }
-  }, [isCallConnected, callDuration]);
+
+    // If the call screen is visible, remove the sticky to avoid showing notif bar
+    if (showCallScreen) {
+      if (notificationIdRef.current) {
+        void Notifications.dismissNotificationAsync(notificationIdRef.current).then(() => {
+          notificationIdRef.current = null;
+        }).catch(() => {});
+      }
+      return;
+    }
+
+    // Throttle updates to avoid flicker: update every 30s or when seconds hit :00 or :30
+    const now = Date.now();
+    const shouldUpdateByTime = !lastNotifUpdateRef.current || (now - lastNotifUpdateRef.current >= 30000);
+    const shouldUpdateBySeconds = /:(00|30)$/.test(callDuration);
+    if (shouldUpdateByTime || shouldUpdateBySeconds) {
+      void showOrUpdateCallNotification('On call', `Duration ${callDuration}`);
+      lastNotifUpdateRef.current = now;
+    }
+  }, [isCallConnected, callDuration, showCallScreen]);
 
   return {
     // state

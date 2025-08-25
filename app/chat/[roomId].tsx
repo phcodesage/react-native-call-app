@@ -568,9 +568,7 @@ export default function ChatScreen() {
     };
   }, []);
 
-  // WebRTC readiness and pending ICE buffer (to handle early ICE from web)
-  const webrtcReadyRef = useRef<boolean>(false);
-  const pendingIceRef = useRef<any[]>([]);
+  // WebRTC ICE candidates are queued inside WebRTCService until remoteDescription is set
 
   useEffect(() => {
     if (roomId && token) {
@@ -784,14 +782,28 @@ export default function ChatScreen() {
 
           case 'ice-candidate':
           default:
-            // Buffer ICE until WebRTC is ready; then flush
-            if (signal.candidate) {
-              if (webrtcReadyRef.current && webRTCServiceRef.current) {
-                await webRTCServiceRef.current.addIceCandidate(signal);
-              } else {
-                console.log('Buffering ICE candidate - WebRTC not ready yet');
-                pendingIceRef.current.push(signal);
-              }
+            // Forward ICE candidates directly; WebRTCService will queue until ready
+            if (signal.candidate && webRTCServiceRef.current) {
+              await webRTCServiceRef.current.addIceCandidate(signal);
+            }
+            break;
+
+          case 'call-log':
+            try {
+              const ts = Date.now();
+              const newMsg = {
+                message_id: ts,
+                sender: from || 'system',
+                content: signal.message || '',
+                timestamp: new Date(ts).toISOString(),
+                type: 'text',
+                message_class: 'call',
+                status: 'delivered',
+              } as Message;
+              setMessages(prev => [...prev, newMsg]);
+              if (isAtBottom) setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 50);
+            } catch (e) {
+              console.warn('Failed to append call-log message:', e);
             }
             break;
 
