@@ -117,6 +117,8 @@ export default function ChatScreen() {
   const [showColorPicker, setShowColorPicker] = useState(false);
   const [selectedColor, setSelectedColor] = useState<string | null>(null);
   const [chatBgColor, setChatBgColor] = useState<string | null>(null);
+  // Reply UI state
+  const [replyContext, setReplyContext] = useState<{ sender: string; message: string; message_id: number } | null>(null);
   const [showWheel, setShowWheel] = useState(false);
   // RGB input states for manual editing
   const [rgbR, setRgbR] = useState<string>('');
@@ -1091,17 +1093,26 @@ export default function ChatScreen() {
         nextMessages = sourceList;
       }
 
-      setMessages(nextMessages);
+      // 5) Persist translations: merge any existing translated_text into nextMessages
+      const priorList = baselineMessages.length ? baselineMessages : messages;
+      const tMap = new Map<number, string>();
+      for (const m of priorList) {
+        if (m?.translated_text && typeof m.message_id === 'number') {
+          tMap.set(m.message_id, m.translated_text);
+        }
+      }
+      const mergedWithTranslations = nextMessages.map(m => (
+        typeof m.message_id === 'number' && tMap.has(m.message_id)
+          ? { ...m, translated_text: tMap.get(m.message_id)! }
+          : m
+      ));
+
+      setMessages(mergedWithTranslations);
       try {
-        await AsyncStorage.setItem(`messages_cache_${roomId}`, JSON.stringify(nextMessages));
+        await AsyncStorage.setItem(`messages_cache_${roomId}`, JSON.stringify(mergedWithTranslations));
         setServerWarning(null);
-      } catch {}
-      // Scroll to bottom on initial load or when new items arrived
-      const hadNew = incoming.length > 0 || !sourceList.length;
-      if (isInitialLoadRef.current || hadNew) {
-        scrollToBottom(true);
-        // Mark initial load complete after scheduling scroll
-        isInitialLoadRef.current = false;
+      } catch (e) {
+        console.warn('Failed to cache messages:', e);
       }
 
     } catch (error) {
@@ -1284,6 +1295,18 @@ export default function ChatScreen() {
       }
     }
 
+    // Reply mapping: support backend shapes raw.reply or flattened fields
+    const r = raw?.reply;
+    if (r && (r.message || r.sender || r.message_id)) {
+      if (typeof r.message === 'string') msg.reply_content = r.message;
+      if (typeof r.sender === 'string') msg.reply_sender = r.sender;
+      if (r.message_id !== undefined) msg.reply_to_message_id = Number(r.message_id);
+    } else {
+      if (typeof raw?.reply_content === 'string') msg.reply_content = raw.reply_content;
+      if (typeof raw?.reply_sender === 'string') msg.reply_sender = raw.reply_sender;
+      if (raw?.reply_to_message_id !== undefined) msg.reply_to_message_id = Number(raw.reply_to_message_id);
+    }
+
     return msg;
   };
 
@@ -1316,6 +1339,11 @@ export default function ChatScreen() {
       const localTs = Date.now();
       const isoTs = new Date(localTs).toISOString();
 
+      // Reply payload if present
+      const replyPayload = replyContext
+        ? { sender: replyContext.sender, message: replyContext.message, message_id: replyContext.message_id }
+        : undefined;
+
       // Send message via socket
       socketRef.current.emit('send_chat_message', {
         room: roomId,
@@ -1323,6 +1351,7 @@ export default function ChatScreen() {
         from: user?.username || 'Anonymous',
         timestamp: isoTs,
         client_id: localTs,
+        ...(replyPayload ? { reply: replyPayload } : {}),
       });
       
       // Optimistic local echo so it appears immediately
@@ -1334,12 +1363,19 @@ export default function ChatScreen() {
         type: 'text',
         status: 'sent',
       };
+      if (replyPayload) {
+        localMsg.reply_sender = replyPayload.sender;
+        localMsg.reply_content = replyPayload.message;
+        localMsg.reply_to_message_id = Number(replyPayload.message_id);
+      }
       setMessages(prev => [...prev, localMsg]);
       // Play message sound on send
       void messageSoundRef.current?.replayAsync().catch((e) => {
         console.warn('Failed to play message sound (send):', e);
       });
       setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
+      // Clear reply state after sending
+      setReplyContext(null);
     } catch (error) {
       console.error('Error sending message:', error);
       Alert.alert('Error', 'Failed to send message');
@@ -1420,17 +1456,6 @@ export default function ChatScreen() {
             </Text>
           )}
 
-          {item.reply_content && item.reply_sender && (
-            <View style={[styles.replyPreview, { backgroundColor: isDark ? '#7c3aed20' : '#ddd6fe' }]}>
-              <Text style={[styles.replyAuthor, { color: isDark ? '#a78bfa' : '#7c3aed' }]}>
-                {safeText(item.reply_sender)}
-              </Text>
-              <Text style={[styles.replyText, { color: isDark ? '#e5e7eb' : '#374151' }]} numberOfLines={1}>
-                {safeText(item.reply_content)}
-              </Text>
-            </View>
-          )}
-
           <View style={[styles.bubbleRow, isOutgoing ? styles.bubbleRowOutgoing : styles.bubbleRowIncoming]}>
             <TouchableOpacity
               activeOpacity={0.9}
@@ -1444,6 +1469,25 @@ export default function ChatScreen() {
               onLongPress={() => openContextMenu(item)}
               delayLongPress={250}
             >
+              {item.reply_content && item.reply_sender ? (
+                <View
+                  style={{
+                    marginBottom: 6,
+                    padding: 8,
+                    borderLeftWidth: 3,
+                    borderLeftColor: '#7c3aed',
+                    borderRadius: 6,
+                    backgroundColor: isOutgoing ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.12)'
+                  }}
+                >
+                  <Text style={{ fontSize: 12, fontWeight: '700', color: '#a78bfa', marginBottom: 2 }} numberOfLines={1}>
+                    {safeText(item.reply_sender)}
+                  </Text>
+                  <Text style={{ fontSize: 12, fontStyle: 'italic', color: '#e5e7eb' }} numberOfLines={2}>
+                    {safeText(item.reply_content)}
+                  </Text>
+                </View>
+              ) : null}
               {item.type === 'audio' ? (
                 <AudioMessage
                   uri={item.file_url || ''}
@@ -1545,6 +1589,19 @@ export default function ChatScreen() {
     );
   };
 
+  // Reply: from context menu tap
+  const handleReply = () => {
+    const msg = contextMenuMessage;
+    closeContextMenu();
+    if (!msg) return;
+    const text = safeText(msg.content || msg.message || '');
+    setReplyContext({ sender: safeText(msg.sender), message: text, message_id: Number(msg.message_id) });
+    // Focus input and move caret to end
+    setTimeout(() => {
+      textInputRef.current?.focus();
+    }, 0);
+  };
+
   // Open mobile-friendly context menu
   const openContextMenu = (message: Message) => {
     setContextMenuMessage(message);
@@ -1555,12 +1612,6 @@ export default function ChatScreen() {
     setShowContextMenu(false);
     // small timeout to avoid immediate re-trigger
     setTimeout(() => setContextMenuMessage(null), 150);
-  };
-
-  // Placeholder handlers (safe defaults to avoid large diffs/lint issues)
-  const handleReply = () => {
-    // TODO: wire actual reply flow
-    closeContextMenu();
   };
   // Perform translation for a given message id and original text
   const performTranslation = async (messageId: number, original: string) => {
@@ -1582,7 +1633,16 @@ export default function ChatScreen() {
       const data = await res.json();
       const translated = data?.translated_text || data?.translation || '';
       if (translated) {
-        setMessages(prev => prev.map(m => m.message_id === messageId ? { ...m, translated_text: translated } : m));
+        setMessages(prev => {
+          const updated = prev.map(m => m.message_id === messageId ? { ...m, translated_text: translated } : m);
+          // Persist to cache so translation survives reloads
+          try {
+            if (roomId) {
+              void AsyncStorage.setItem(`messages_cache_${roomId}`, JSON.stringify(updated));
+            }
+          } catch {}
+          return updated;
+        });
         setTranslateTargetId(null);
       }
     } catch (e) {
@@ -2267,6 +2327,34 @@ export default function ChatScreen() {
             <TouchableOpacity onPress={cancelEdit} style={[styles.editCancelBtn, { backgroundColor: isDark ? '#374151' : '#d1d5db' }]}>
               <Text style={[styles.editCancelBtnText, { color: isDark ? '#e5e7eb' : '#1f2937' }]}>Cancel</Text>
             </TouchableOpacity>
+          </View>
+        ) : null}
+
+        {/* Reply Preview (above input) */}
+        {replyContext ? (
+          <View style={[
+            styles.replyPreview,
+            { backgroundColor: isDark ? '#7c3aed20' : '#ddd6fe' }
+          ]}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+              <View style={{ flex: 1, paddingRight: 8 }}>
+                <Text style={[styles.replyAuthor, { color: isDark ? '#a78bfa' : '#7c3aed' }]}>
+                  Replying to {safeText(replyContext.sender)}
+                </Text>
+                <Text
+                  style={[styles.replyText, { color: isDark ? '#e5e7eb' : '#374151' }]}
+                  numberOfLines={1}
+                >
+                  {safeText(replyContext.message)}
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => setReplyContext(null)}
+                style={{ paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, backgroundColor: isDark ? '#374151' : '#d1d5db' }}
+              >
+                <Text style={{ color: isDark ? '#e5e7eb' : '#1f2937', fontWeight: '600' }}>Cancel</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         ) : null}
 
