@@ -756,6 +756,39 @@ export default function ChatScreen() {
       handleIncomingReaction(data);
     });
 
+    // Listen for message deletions
+    socket.on('chat_message_deleted', (data: any) => {
+      try {
+        const idRaw = data?.message_id;
+        if (idRaw === undefined || idRaw === null) return;
+        const id = Number(idRaw);
+        if (!Number.isFinite(id)) return;
+
+        setMessages(prev => prev.filter(m => m.message_id !== id));
+        // Clear editing state if the deleted message is being edited
+        if (editingMessageId === id) {
+          cancelEdit();
+        }
+        // Clear reply compose if targeting the deleted message
+        setReplyContext(rc => (rc && rc.message_id === id ? null : rc));
+        // Close context menu if open on this message
+        setContextMenuMessage(cm => {
+          if (cm && cm.message_id === id) {
+            setShowContextMenu(false);
+            return null;
+          }
+          return cm;
+        });
+        // Remove any cached ref
+        try { messageRefs.current.delete(id); } catch {}
+
+        // Optional: small UI feedback scroll
+        if (isAtBottom) setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 50);
+      } catch (e) {
+        console.warn('Failed to handle chat_message_deleted:', e);
+      }
+    });
+
     // Listen for WebRTC signals
     socket.on('signal', async (data: any) => {
       console.log('Received WebRTC signal:', data);
