@@ -20,6 +20,7 @@ import {
   FlatList,
   KeyboardAvoidingView,
   Image,
+  Dimensions,
   Linking,
   Modal,
   Platform,
@@ -115,6 +116,12 @@ export default function ChatScreen() {
   const [rgbB, setRgbB] = useState<string>('');
   const [serverWarning, setServerWarning] = useState<string | null>(null);
   const [selectedMessageId, setSelectedMessageId] = useState<number | null>(null);
+  // Anchor for reaction emoji picker: screen coordinates and direction
+  const [selectedMessagePos, setSelectedMessagePos] = useState<{ id: number; x: number; y: number; isOutgoing: boolean } | null>(null);
+  // Refs to measure each message bubble position on screen
+  const messageRefs = useRef<Map<number, any>>(new Map());
+  // Height of the reaction row to place it exactly above the bubble
+  const [reactionRowHeight, setReactionRowHeight] = useState<number>(0);
   const notificationSoundRef = useRef<Audio.Sound | null>(null);
   const messageSoundRef = useRef<Audio.Sound | null>(null);
   // Input auto-grow up to 2 lines, then scroll inside
@@ -131,6 +138,61 @@ export default function ChatScreen() {
       isMountedRef.current = false;
     };
   }, []);
+
+  // Normalize backend reactions shape to emoji->users map.
+  // Accepts either { username: emoji } or { emoji: [users] } and produces { emoji: [users] }
+  const normalizeReactions = (input: any): { [emoji: string]: string[] } => {
+    if (!input) return {};
+    // If already in emoji->users form
+    const firstVal = input && typeof input === 'object' ? (Object.values(input as any)[0] as any) : undefined;
+    if (firstVal && Array.isArray(firstVal)) {
+      return input as { [emoji: string]: string[] };
+    }
+    // username->emoji form
+    const result: { [emoji: string]: string[] } = {};
+    Object.entries(input as { [user: string]: string }).forEach(([u, e]) => {
+      if (!e) return;
+      if (!result[e]) result[e] = [];
+      if (!result[e].includes(u)) result[e].push(u);
+    });
+    return result;
+  };
+
+  // Local optimistic helpers
+  const addUserReactionLocal = (reactions: { [emoji: string]: string[] } | undefined, username: string, emoji: string) => {
+    const map = normalizeReactions(reactions || {});
+    // Remove existing reaction by this user (if any)
+    Object.keys(map).forEach(k => {
+      map[k] = map[k].filter(u => u !== username);
+      if (map[k].length === 0) delete map[k];
+    });
+    // Add new
+    map[emoji] = [...(map[emoji] || []), username];
+    return map;
+  };
+
+  const removeUserReactionLocal = (reactions: { [emoji: string]: string[] } | undefined, username: string) => {
+    const map = normalizeReactions(reactions || {});
+    Object.keys(map).forEach(k => {
+      map[k] = map[k].filter(u => u !== username);
+      if (map[k].length === 0) delete map[k];
+    });
+    return map;
+  };
+
+  // Open reaction picker anchored above the message by measuring its on-screen position
+  const openReactionForMessage = (messageId: number, isOutgoing: boolean) => {
+    const ref = messageRefs.current.get(messageId);
+    if (ref && typeof ref.measureInWindow === 'function') {
+      ref.measureInWindow((x: number, y: number, width: number, height: number) => {
+        // Place the bar above the bubble; x mid used to center horizontally if needed
+        setSelectedMessagePos({ id: messageId, x: x + width / 2, y: y, isOutgoing });
+      });
+    } else {
+      // Fallback: center screen
+      setSelectedMessagePos({ id: messageId, x: Dimensions.get('window').width / 2, y: Dimensions.get('window').height / 2, isOutgoing });
+    }
+  };
   const MAX_INPUT_HEIGHT = INPUT_LINE_HEIGHT * 2 + INPUT_VERTICAL_PADDING; // two lines max
   // Scrolling state for unread indicator
   const [isAtBottom, setIsAtBottom] = useState(true);
@@ -590,7 +652,13 @@ export default function ChatScreen() {
     });
 
     socket.on('receive_reaction', (data: any) => {
-      console.log('Received reaction for message id:', data?.message_id);
+      console.log('Received reaction (legacy) for message id:', data?.message_id);
+      handleIncomingReaction(data);
+    });
+
+    // Flask backend: broadcast after /react_message and /remove_reaction
+    socket.on('message_reactions_updated', (data: any) => {
+      console.log('[socket] message_reactions_updated:', data);
       handleIncomingReaction(data);
     });
 
@@ -702,7 +770,7 @@ export default function ChatScreen() {
       reply_sender: data.reply_sender,
       reply_to_message_id: data.reply_to_message_id,
       status: data.status || 'sent',
-      reactions: data.reactions || {}
+      reactions: normalizeReactions(data.reactions)
     };
     
     setMessages(prevMessages => {
@@ -721,24 +789,47 @@ export default function ChatScreen() {
     }, 100);
   };
 
-  const handleIncomingReaction = (data: { message_id: number; reactions: { [key: string]: string[] } }) => {
-    setMessages(prev =>
-      prev.map(msg =>
-        msg.message_id === data.message_id ? { ...msg, reactions: data.reactions } : msg
-      )
-    );
+  const handleIncomingReaction = (data: { message_id: number | string; reactions: any }) => {
+    const normalized = normalizeReactions(data.reactions);
+    const idNum = typeof data.message_id === 'string' ? Number(data.message_id) : data.message_id;
+    setMessages(prev => prev.map(msg => (msg.message_id === idNum ? { ...msg, reactions: normalized } : msg)));
   };
 
-  const handleSendReaction = (messageId: number, emoji: string) => {
-    if (!socketRef.current || !roomId || !user?.username) return;
+  const handleSendReaction = async (messageId: number, emoji: string) => {
+    if (!roomId || !user?.username) return;
+    // Optimistic update
+    setMessages(prev => prev.map(m => (m.message_id === messageId ? { ...m, reactions: addUserReactionLocal(m.reactions, user.username!, emoji) } : m)));
+    setSelectedMessagePos(null);
+    try {
+      await fetch(getApiUrl('/react_message'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ message_id: messageId, emoji, username: user.username, room: roomId }),
+      });
+    } catch (e) {
+      console.warn('Failed to send reaction:', e);
+    }
+  };
 
-    socketRef.current.emit('send_reaction', {
-      room: roomId,
-      message_id: messageId,
-      reaction: emoji,
-      from: user.username,
-    });
-    setSelectedMessageId(null); // Close picker
+  const handleRemoveReaction = async (messageId: number) => {
+    if (!roomId || !user?.username) return;
+    // Optimistic remove
+    setMessages(prev => prev.map(m => (m.message_id === messageId ? { ...m, reactions: removeUserReactionLocal(m.reactions, user.username!) } : m)));
+    try {
+      await fetch(getApiUrl('/remove_reaction'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ message_id: messageId, username: user.username, room: roomId }),
+      });
+    } catch (e) {
+      console.warn('Failed to remove reaction:', e);
+    }
   };
 
   const updateMessageStatus = (messageId: number, status: string) => {
@@ -1213,49 +1304,70 @@ export default function ChatScreen() {
             </View>
           )}
 
-          <TouchableOpacity
-            activeOpacity={0.9}
-            onLongPress={() => setSelectedMessageId(item.message_id)}
-            style={[styles.messageBubble, isOutgoing ? styles.myMessageBubble : styles.otherMessageBubble]}
-          >
-            {item.type === 'audio' ? (
-              <AudioMessage
-                uri={item.file_url || ''}
-                duration={item.audio_data ? parseInt(item.audio_data) : 30}
-                isOutgoing={isOutgoing}
-                timestamp={new Date(item.timestamp).getTime()}
-                onReaction={(emoji) => handleSendReaction(item.message_id, emoji)}
-              />
-            ) : item.type === 'file' ? (
-              <FileMessage
-                file_id={item.file_id}
-                file_name={item.file_name}
-                file_type={item.file_type}
-                file_size={item.file_size}
-                file_url={item.file_url}
-                sender={item.sender}
-                timestamp={item.timestamp}
-                isOutgoing={isOutgoing}
-                isDark={isDark}
-              />
-            ) : (
-              <Text style={[styles.messageText, { color: '#e5e7eb' }]}>
-                {messageText}
-              </Text>
-            )}
-            <Text style={styles.timestamp}>{formatTimestamp(item.timestamp)}</Text>
-          </TouchableOpacity>
+          <View style={[styles.bubbleRow, isOutgoing ? styles.bubbleRowOutgoing : styles.bubbleRowIncoming]}>
+            <TouchableOpacity
+              activeOpacity={0.9}
+              onLongPress={() => openReactionForMessage(item.message_id, isOutgoing)}
+              style={[styles.messageBubble, isOutgoing ? styles.myMessageBubble : styles.otherMessageBubble]}
+              ref={(r) => {
+                if (r) messageRefs.current.set(item.message_id, r);
+              }}
+            >
+              {item.type === 'audio' ? (
+                <AudioMessage
+                  uri={item.file_url || ''}
+                  duration={item.audio_data ? parseInt(item.audio_data) : 30}
+                  isOutgoing={isOutgoing}
+                  timestamp={new Date(item.timestamp).getTime()}
+                  onReaction={(emoji) => handleSendReaction(item.message_id, emoji)}
+                />
+              ) : item.type === 'file' ? (
+                <FileMessage
+                  file_id={item.file_id}
+                  file_name={item.file_name}
+                  file_type={item.file_type}
+                  file_size={item.file_size}
+                  file_url={item.file_url}
+                  sender={item.sender}
+                  timestamp={item.timestamp}
+                  isOutgoing={isOutgoing}
+                  isDark={isDark}
+                />
+              ) : (
+                <Text style={[styles.messageText, { color: '#e5e7eb' }]}>
+                  {messageText}
+                </Text>
+              )}
 
-          {reactions.length > 0 && (
-            <View style={[styles.reactionsContainer, { alignSelf: isOutgoing ? 'flex-end' : 'flex-start' }]}>
-              {reactions.map(([emoji, users]) => (
-                <View key={emoji} style={styles.reactionBadge}>
-                  <Text>{emoji}</Text>
-                  <Text style={styles.reactionCount}>{users.length}</Text>
+              {reactions.length > 0 && (
+                <View style={[styles.reactionsContainer]}> 
+                  {reactions.map(([emoji, users]) => {
+                    const youReacted = user?.username ? (users as string[]).includes(user.username) : false;
+                    return (
+                      <TouchableOpacity
+                        key={String(emoji)}
+                        style={[styles.reactionBadge, youReacted ? { borderColor: '#a78bfa', borderWidth: 1 } : null]}
+                        onPress={() => youReacted ? handleRemoveReaction(item.message_id) : undefined}
+                        activeOpacity={0.7}
+                      >
+                        <Text>{emoji}</Text>
+                        <Text style={styles.reactionCount}>{(users as string[]).length}</Text>
+                      </TouchableOpacity>
+                    );
+                  })}
                 </View>
-              ))}
-            </View>
-          )}
+              )}
+
+              <Text style={styles.timestamp}>{formatTimestamp(item.timestamp)}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.reactionButton}
+              onPress={() => openReactionForMessage(item.message_id, isOutgoing)}
+            >
+              <Ionicons name="happy-outline" size={22} color="#888" />
+            </TouchableOpacity>
+          </View>
+
 
           {showTimestamps && (
             <Text style={[styles.timestamp, { color: '#ec4899', alignSelf: isOutgoing ? 'flex-end' : 'flex-start' }]}>
@@ -1263,9 +1375,6 @@ export default function ChatScreen() {
             </Text>
           )}
         </View>
-        <TouchableOpacity style={styles.reactionButton} onPress={() => setSelectedMessageId(item.message_id)}>
-          <Ionicons name="happy-outline" size={22} color="#888" />
-        </TouchableOpacity>
       </View>
     );
   };
@@ -1633,18 +1742,47 @@ export default function ChatScreen() {
         }}
       />
 
-        {/* Reaction Picker Modal */}
+        {/* Reaction Picker Modal (anchored near tapped message) */}
         <Modal
-          visible={selectedMessageId !== null}
+          visible={selectedMessagePos !== null}
           transparent
           animationType="fade"
-          onRequestClose={() => setSelectedMessageId(null)}
+          onRequestClose={() => setSelectedMessagePos(null)}
         >
           <View style={styles.modalOverlay}>
-            <View style={[styles.emojiPickerContainer, { backgroundColor: isDark ? '#111827' : '#ffffff' }]}>
+            {selectedMessagePos ? (
+              <View
+                style={[
+                  {
+                    position: 'absolute',
+                    left: 0,
+                    right: 0,
+                    // Place the bar exactly above the bubble using measured height
+                    top: Math.max(
+                      48,
+                      Math.min(
+                        selectedMessagePos.y - (reactionRowHeight || 120) - 8,
+                        Dimensions.get('window').height - (reactionRowHeight || 120) - 48
+                      )
+                    ),
+                    paddingHorizontal: 12,
+                  },
+                ]}
+              >
+              <View style={[
+                styles.emojiPickerContainer,
+                {
+                  margin: 0,
+                  width: '100%',
+                  maxWidth: undefined,
+                  backgroundColor: isDark ? '#111827' : '#ffffff',
+                }
+              ]}
+              onLayout={(e) => setReactionRowHeight(e.nativeEvent.layout.height)}
+              >
               <View style={styles.emojiPickerHeader}>
                 <Text style={{ fontWeight: '600', color: isDark ? '#f3f4f6' : '#111827' }}>React to message</Text>
-                <TouchableOpacity onPress={() => setSelectedMessageId(null)}>
+                <TouchableOpacity onPress={() => setSelectedMessagePos(null)}>
                   <Ionicons name="close" size={18} color={isDark ? '#f3f4f6' : '#111827'} />
                 </TouchableOpacity>
               </View>
@@ -1653,13 +1791,15 @@ export default function ChatScreen() {
                   <TouchableOpacity
                     key={e}
                     style={[styles.emojiItem, { backgroundColor: isDark ? '#1f2937' : '#f3f4f6' }]}
-                    onPress={() => { if (selectedMessageId) handleSendReaction(selectedMessageId, e); }}
+                    onPress={() => { if (selectedMessagePos?.id) handleSendReaction(selectedMessagePos.id, e); }}
                   >
                     <Text style={styles.emojiText}>{e}</Text>
                   </TouchableOpacity>
                 ))}
               </View>
-            </View>
+              </View>
+              </View>
+            ) : null}
           </View>
         </Modal>
 
@@ -2459,7 +2599,7 @@ const styles = StyleSheet.create({
   },
   messageRow: {
     flexDirection: 'row',
-    alignItems: 'flex-end',
+    alignItems: 'center',
     marginVertical: 4,
     marginHorizontal: 8,
     maxWidth: '85%',
@@ -2470,6 +2610,18 @@ const styles = StyleSheet.create({
   },
   otherMessageRow: {
     alignSelf: 'flex-start',
+  },
+  // Row that contains the bubble and its reaction button
+  bubbleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  bubbleRowOutgoing: {
+    flexDirection: 'row-reverse',
+  },
+  bubbleRowIncoming: {
+    flexDirection: 'row',
   },
   myMessageBubble: {
     backgroundColor: '#420796',
@@ -2496,9 +2648,12 @@ const styles = StyleSheet.create({
     marginLeft: 4,
   },
   reactionButton: {
-    padding: 4,
-    marginLeft: 4,
-    marginRight: 4,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginHorizontal: 6,
   },
   messagesContainer: {
     paddingVertical: 16,
@@ -2527,7 +2682,7 @@ const styles = StyleSheet.create({
   },
   inputContainer: {
     flexDirection: 'row',
-    alignItems: 'flex-end',
+    alignItems: 'center',
     paddingHorizontal: 16,
     paddingTop: 12,
     paddingBottom: 12,
@@ -2645,7 +2800,7 @@ const styles = StyleSheet.create({
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    backgroundColor: 'transparent',
     alignItems: 'center',
     justifyContent: 'center',
   },
