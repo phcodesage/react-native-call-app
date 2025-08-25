@@ -74,6 +74,8 @@ interface Message {
   status?: string;
   room?: string;
   client_id?: number;
+  // Inline translation result (client-side only augmentation)
+  translated_text?: string;
 }
 
 export default function ChatScreen() {
@@ -206,6 +208,22 @@ export default function ChatScreen() {
   // Mobile-friendly context menu state (bottom sheet)
   const [showContextMenu, setShowContextMenu] = useState(false);
   const [contextMenuMessage, setContextMenuMessage] = useState<Message | null>(null);
+  // Track which message(s) are being translated to show a lightweight inline spinner/text
+  const [translatingMessageIds, setTranslatingMessageIds] = useState<Set<number>>(new Set());
+  // Single-tap selection for showing inline translate button
+  const [translateTargetId, setTranslateTargetId] = useState<number | null>(null);
+  const toggleTranslateTarget = (id: number) => {
+    setTranslateTargetId(prev => (prev === id ? null : id));
+  };
+  // Track which translated messages should show their original text
+  const [showOriginalIds, setShowOriginalIds] = useState<Set<number>>(new Set());
+  const toggleShowOriginal = (id: number) => {
+    setShowOriginalIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
 
   // Track mount to avoid setState after unmount (can happen when returning from camera)
   useEffect(() => {
@@ -1420,6 +1438,9 @@ export default function ChatScreen() {
               ref={(r) => {
                 if (r) messageRefs.current.set(item.message_id, r);
               }}
+              onPress={() => {
+                if (item.type === 'text') toggleTranslateTarget(item.message_id);
+              }}
               onLongPress={() => openContextMenu(item)}
               delayLongPress={250}
             >
@@ -1444,9 +1465,44 @@ export default function ChatScreen() {
                   isDark={isDark}
                 />
               ) : (
-                <Text style={[styles.messageText, { color: '#e5e7eb' }]}>
-                  {messageText}
-                </Text>
+                <>
+                  {item.translated_text ? (
+                    showOriginalIds.has(item.message_id) ? (
+                      <Text style={[styles.messageText, { color: '#e5e7eb' }]}>
+                        {messageText}
+                      </Text>
+                    ) : null
+                  ) : (
+                    <Text style={[styles.messageText, { color: '#e5e7eb' }]}>
+                      {messageText}
+                    </Text>
+                  )}
+                  {item.translated_text ? (
+                    <TouchableOpacity
+                      style={[styles.translateButton, { alignSelf: isOutgoing ? 'flex-end' : 'flex-start', backgroundColor: isOutgoing ? '#6d28d9' : '#4338ca' }]}
+                      onPress={() => toggleShowOriginal(item.message_id)}
+                    >
+                      <Text style={styles.translateButtonText}>
+                        {showOriginalIds.has(item.message_id) ? 'Hide original' : 'Show original'}
+                      </Text>
+                    </TouchableOpacity>
+                  ) : null}
+                  {translateTargetId === item.message_id && !item.translated_text && !translatingMessageIds.has(item.message_id) ? (
+                    <TouchableOpacity
+                      style={[styles.translateButton, { alignSelf: isOutgoing ? 'flex-end' : 'flex-start', backgroundColor: isOutgoing ? '#6d28d9' : '#4338ca' }]}
+                      onPress={() => performTranslation(item.message_id, messageText)}
+                    >
+                      <Text style={styles.translateButtonText}>Translate</Text>
+                    </TouchableOpacity>
+                  ) : null}
+                  {translatingMessageIds.has(item.message_id) ? (
+                    <Text style={[styles.translatingText, { color: isOutgoing ? '#d1d5db' : '#6b7280' }]}>Translating…</Text>
+                  ) : item.translated_text ? (
+                    <Text style={[styles.translatedText, { color: '#ffffff' }]}>
+                      {item.translated_text}
+                    </Text>
+                  ) : null}
+                </>
               )}
 
               {reactions.length > 0 && (
@@ -1506,9 +1562,39 @@ export default function ChatScreen() {
     // TODO: wire actual reply flow
     closeContextMenu();
   };
-  const handleTranslate = () => {
-    // TODO: implement translate
-    closeContextMenu();
+  // Perform translation for a given message id and original text
+  const performTranslation = async (messageId: number, original: string) => {
+    if (!original.trim()) {
+      Alert.alert('Translate', 'Nothing to translate for this message.');
+      return;
+    }
+    setTranslatingMessageIds(prev => new Set(prev).add(messageId));
+    try {
+      const res = await fetch(getApiUrl('/translate_message'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ text: original }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const translated = data?.translated_text || data?.translation || '';
+      if (translated) {
+        setMessages(prev => prev.map(m => m.message_id === messageId ? { ...m, translated_text: translated } : m));
+        setTranslateTargetId(null);
+      }
+    } catch (e) {
+      console.warn('Translate request failed:', e);
+      Alert.alert('Translate failed', 'Could not translate this message.');
+    } finally {
+      setTranslatingMessageIds(prev => {
+        const next = new Set(prev);
+        next.delete(messageId);
+        return next;
+      });
+    }
   };
   const handleEdit = () => {
     const msg = contextMenuMessage;
@@ -2997,6 +3083,27 @@ const styles = StyleSheet.create({
     fontSize: 15,
     lineHeight: 20,
     fontWeight: '400',
+  },
+  translateButton: {
+    marginTop: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  translateButtonText: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  translatingText: {
+    fontSize: 12,
+    marginTop: 6,
+    fontStyle: 'italic',
+  },
+  translatedText: {
+    fontSize: 13,
+    marginTop: 6,
+    opacity: 0.9,
   },
   audioMessage: {
     flexDirection: 'row',
