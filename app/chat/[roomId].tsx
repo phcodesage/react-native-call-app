@@ -131,6 +131,10 @@ export default function ChatScreen() {
   const INPUT_LINE_HEIGHT = 20; // should match visual line height
   const INPUT_VERTICAL_PADDING = 20; // paddingVertical 10 (top) + 10 (bottom)
 
+  // Mobile-friendly context menu state (bottom sheet)
+  const [showContextMenu, setShowContextMenu] = useState(false);
+  const [contextMenuMessage, setContextMenuMessage] = useState<Message | null>(null);
+
   // Track mount to avoid setState after unmount (can happen when returning from camera)
   useEffect(() => {
     isMountedRef.current = true;
@@ -1307,11 +1311,12 @@ export default function ChatScreen() {
           <View style={[styles.bubbleRow, isOutgoing ? styles.bubbleRowOutgoing : styles.bubbleRowIncoming]}>
             <TouchableOpacity
               activeOpacity={0.9}
-              onLongPress={() => openReactionForMessage(item.message_id, isOutgoing)}
               style={[styles.messageBubble, isOutgoing ? styles.myMessageBubble : styles.otherMessageBubble]}
               ref={(r) => {
                 if (r) messageRefs.current.set(item.message_id, r);
               }}
+              onLongPress={() => openContextMenu(item)}
+              delayLongPress={250}
             >
               {item.type === 'audio' ? (
                 <AudioMessage
@@ -1377,6 +1382,44 @@ export default function ChatScreen() {
         </View>
       </View>
     );
+  };
+
+  // Open mobile-friendly context menu
+  const openContextMenu = (message: Message) => {
+    setContextMenuMessage(message);
+    setShowContextMenu(true);
+  };
+
+  const closeContextMenu = () => {
+    setShowContextMenu(false);
+    // small timeout to avoid immediate re-trigger
+    setTimeout(() => setContextMenuMessage(null), 150);
+  };
+
+  // Placeholder handlers (safe defaults to avoid large diffs/lint issues)
+  const handleReply = () => {
+    // TODO: wire actual reply flow
+    closeContextMenu();
+  };
+  const handleTranslate = () => {
+    // TODO: implement translate
+    closeContextMenu();
+  };
+  const handleEdit = () => {
+    // TODO: implement edit for own messages
+    closeContextMenu();
+  };
+  const handleDelete = () => {
+    // TODO: implement delete
+    closeContextMenu();
+  };
+  const handleExportClipboard = (withTimestamps: boolean) => {
+    // TODO: implement export to clipboard
+    closeContextMenu();
+  };
+  const handleExportDesktop = (withTimestamps: boolean) => {
+    // TODO: implement export to desktop
+    closeContextMenu();
   };
 
   const parseTimestampSafe = (value: any): number => {
@@ -2419,6 +2462,44 @@ export default function ChatScreen() {
           </TouchableOpacity>
         </View>
       ) : null}
+      {/* Context Menu Bottom Sheet */}
+      <Modal
+        visible={showContextMenu}
+        transparent
+        animationType="fade"
+        onRequestClose={closeContextMenu}
+      >
+        <TouchableOpacity
+          activeOpacity={1}
+          style={styles.contextOverlay}
+          onPress={closeContextMenu}
+        >
+          <View style={styles.contextSheet}>
+            <View style={styles.contextHandle} />
+            <TouchableOpacity style={styles.contextItem} onPress={handleReply}>
+              <Text style={styles.contextItemText}>Reply</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.contextItem} onPress={handleEdit}>
+              <Text style={styles.contextItemText}>Edit</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.contextItem]} onPress={handleDelete}>
+              <Text style={[styles.contextItemText, styles.contextDanger]}>Delete</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.contextItem} onPress={() => handleExportClipboard(true)}>
+              <Text style={styles.contextItemText}>Export to Clipboard (TS on)</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.contextItem} onPress={() => handleExportClipboard(false)}>
+              <Text style={styles.contextItemText}>Export to Clipboard (TS off)</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.contextItem} onPress={() => handleExportDesktop(true)}>
+              <Text style={styles.contextItemText}>Export to Desktop (TS on)</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.contextItem} onPress={() => handleExportDesktop(false)}>
+              <Text style={styles.contextItemText}>Export to Desktop (TS off)</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -3063,6 +3144,41 @@ const styles = StyleSheet.create({
   unreadBadgeText: {
     color: '#fff',
     fontSize: 12,
+    fontWeight: '700',
+    marginLeft: 6,
+  },
+  contextOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.25)',
+    justifyContent: 'flex-end',
+  },
+  contextSheet: {
+    backgroundColor: '#1f2937',
+    paddingTop: 8,
+    paddingBottom: 12,
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#374151',
+  },
+  contextHandle: {
+    alignSelf: 'center',
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: '#6b7280',
+    marginBottom: 8,
+  },
+  contextItem: {
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+  },
+  contextItemText: {
+    color: '#e5e7eb',
+    fontSize: 16,
+  },
+  contextDanger: {
+    color: '#f87171',
     fontWeight: '700',
   },
 });
