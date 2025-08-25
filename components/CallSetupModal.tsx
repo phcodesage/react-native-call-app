@@ -78,6 +78,10 @@ export const CallSetupModal: React.FC<CallSetupModalProps> = ({
   // Initialize devices and preview when modal opens
   useEffect(() => {
     if (visible) {
+      // Reset transient UI state on open to avoid stuck "Calling ..." overlay across sessions
+      setIsStartingCall(false);
+      setShowCallStartOverlay(false);
+      callStartAnimation.setValue(0);
       initializeDevicesAndPreview();
     } else {
       cleanupPreview();

@@ -458,6 +458,12 @@ export function useCallFunctions({
         from: user?.username,
       });
     }
+
+    // Reset direction and any pending offer so next call starts fresh
+    callDirectionRef.current = null;
+    if (pendingOfferRef?.current) {
+      pendingOfferRef.current = null;
+    }
   };
 
   const handleToggleMute = () => {

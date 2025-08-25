@@ -335,20 +335,13 @@ export const CallScreen: React.FC<CallScreenProps> = ({
       {controlsVisible && (
         <View style={styles.controls as any}>
           <View style={styles.controlRow as any}>
-            {/* Chat Button */}
-            {hasVideo && onSendMessage && (
+            {/* Chat Button - always available when onSendMessage exists */}
+            {onSendMessage && (
               <TouchableOpacity
-                style={[
-                  styles.controlButton as any,
-                  chatVisible && (styles.controlButtonActive as any)
-                ]}
+                style={[styles.textButton as any, chatVisible && (styles.textButtonActive as any)]}
                 onPress={() => setChatVisible(!chatVisible)}
               >
-                <Ionicons
-                  name="chatbubble"
-                  size={24}
-                  color={chatVisible ? '#10b981' : '#ffffff'}
-                />
+                <Text style={styles.textButtonLabel as any}>{chatVisible ? 'Hide Chat' : 'Chat'}</Text>
                 {messages.length > 0 && (
                   <View style={styles.chatBadge}>
                     <Text style={styles.chatBadgeText}>{messages.length}</Text>
@@ -357,65 +350,51 @@ export const CallScreen: React.FC<CallScreenProps> = ({
               </TouchableOpacity>
             )}
 
-            {/* Mute Button */}
+            {/* Audio status/toggle */}
             <TouchableOpacity
-              style={[
-                styles.controlButton as any,
-                isAudioMuted && (styles.controlButtonActive as any)
-              ]}
+              style={[styles.textButton as any]}
               onPress={onToggleMute}
             >
-              <Ionicons
-                name={isAudioMuted ? 'mic-off' : 'mic'}
-                size={24}
-                color={isAudioMuted ? '#ef4444' : '#ffffff'}
-              />
+              <Text style={styles.textButtonLabel as any}>Audio is: {isAudioMuted ? 'off' : 'on'}</Text>
             </TouchableOpacity>
 
-            {/* Video Button (only for video calls) */}
+            {/* Video status/toggle (only for video-capable calls) */}
             {hasVideo && (
               <TouchableOpacity
-                style={[
-                  styles.controlButton as any,
-                  isVideoMuted && (styles.controlButtonActive as any)
-                ]}
+                style={[styles.textButton as any]}
                 onPress={onToggleVideo}
               >
-                <Ionicons
-                  name={isVideoMuted ? 'videocam-off' : 'videocam'}
-                  size={24}
-                  color={isVideoMuted ? '#ef4444' : '#ffffff'}
-                />
+                <Text style={styles.textButtonLabel as any}>Video is: {isVideoMuted ? 'off' : 'on'}</Text>
               </TouchableOpacity>
             )}
 
-            {/* Switch Camera Button (only for video calls) */}
+            {/* Switch Camera (only when video available and not muted) */}
             {hasVideo && !isVideoMuted && (
               <TouchableOpacity
-                style={styles.controlButton}
+                style={[styles.textButton as any]}
                 onPress={onSwitchCamera}
               >
-                <Ionicons name="camera-reverse" size={24} color="#ffffff" />
+                <Text style={styles.textButtonLabel as any}>Switch Camera</Text>
               </TouchableOpacity>
             )}
 
-            {/* Speaker Button (for audio calls) */}
+            {/* Speaker toggle (audio-only) */}
             {!hasVideo && onToggleSpeaker && (
               <TouchableOpacity
-                style={styles.controlButton}
+                style={[styles.textButton as any]}
                 onPress={onToggleSpeaker}
               >
-                <Ionicons name="volume-high" size={24} color="#ffffff" />
+                <Text style={styles.textButtonLabel as any}>Speaker</Text>
               </TouchableOpacity>
             )}
           </View>
 
           {/* End Call Button */}
           <TouchableOpacity
-            style={styles.endCallButton as any}
+            style={styles.endCallTextButton as any}
             onPress={handleEndCall}
           >
-            <Ionicons name="call" size={28} color="#ffffff" />
+            <Text style={styles.endCallText as any}>End Call</Text>
           </TouchableOpacity>
         </View>
       )}
@@ -587,27 +566,37 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: 32,
-    gap: 24,
+    gap: 12,
   },
-  controlButton: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
+  textButton: {
+    minWidth: 120,
+    height: 40,
+    paddingHorizontal: 16,
+    borderRadius: 20,
     backgroundColor: 'rgba(255, 255, 255, 0.2)',
     justifyContent: 'center',
     alignItems: 'center',
   },
-  controlButtonActive: {
-    backgroundColor: 'rgba(239, 68, 68, 0.8)',
+  textButtonActive: {
+    backgroundColor: 'rgba(16, 185, 129, 0.4)',
   },
-  endCallButton: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
+  textButtonLabel: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  endCallTextButton: {
+    minWidth: 160,
+    height: 48,
+    borderRadius: 24,
     backgroundColor: '#ef4444',
     justifyContent: 'center',
     alignItems: 'center',
-    transform: [{ rotate: '135deg' }],
+  },
+  endCallText: {
+    color: '#ffffff',
+    fontSize: 16,
+    fontWeight: '700',
   },
   chatOverlay: {
     position: 'absolute',
