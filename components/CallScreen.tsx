@@ -312,11 +312,27 @@ export const CallScreen: React.FC<CallScreenProps> = ({
             placeholderTextColor="#9ca3af"
             multiline
             maxLength={500}
+            returnKeyType="send"
+            blurOnSubmit={false}
+            onSubmitEditing={() => {
+              if (messageText.trim()) {
+                sendMessage();
+              }
+            }}
+            onKeyPress={({ nativeEvent }) => {
+              if (nativeEvent.key === 'Enter') {
+                // Best effort: trigger send on Enter for Android multiline
+                if (messageText.trim()) {
+                  sendMessage();
+                }
+              }
+            }}
           />
           <TouchableOpacity
             style={[styles.sendButton, { opacity: messageText.trim() ? 1 : 0.5 }]}
             onPress={sendMessage}
             disabled={!messageText.trim()}
+            accessibilityLabel="Send message"
           >
             <Ionicons name="send" size={20} color="#ffffff" />
           </TouchableOpacity>
@@ -370,17 +386,6 @@ export const CallScreen: React.FC<CallScreenProps> = ({
             <Text style={styles.callDuration as any}>{callDuration}</Text>
           </View>
 
-          {/* Skype-like chat icon in header */}
-          {onSendMessage && (
-            <TouchableOpacity style={styles.headerChatButton as any} onPress={toggleChat} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
-              <Ionicons name="chatbubbles-outline" size={22} color="#ffffff" />
-              {unreadCount > 0 && !chatVisible && (
-                <View style={styles.headerChatBadge}>
-                  <Text style={styles.headerChatBadgeText}>{unreadCount}</Text>
-                </View>
-              )}
-            </TouchableOpacity>
-          )}
         </View>
       )}
 
