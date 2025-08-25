@@ -46,6 +46,7 @@ import { FileUploadService } from '@/services/FileUploadService';
 import { Image as ExpoImage } from 'expo-image';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as FileSystem from 'expo-file-system';
+import * as Clipboard from 'expo-clipboard';
 
 const API_BASE_URL = ENV.API_BASE_URL;
 const SOCKET_URL = ENV.SOCKET_SERVER_URL;
@@ -1294,6 +1295,31 @@ export default function ChatScreen() {
     });
   };
 
+  // Clipboard-specific timestamp format: [MM/DD/YYYY, HH:MM:SS GMT+H[:MM]]
+  // Examples:
+  //   [08/25/2025, 17:20:10 GMT+8]
+  //   [08/25/2025, 17:20:10 GMT+5:30]
+  const formatClipboardTimestamp = (value: any) => {
+    const ms = parseTimestampSafe(value);
+    const dt = new Date(ms);
+    const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`);
+    const MM = pad(dt.getMonth() + 1);
+    const DD = pad(dt.getDate());
+    const YYYY = dt.getFullYear();
+    const HH = pad(dt.getHours());
+    const mm = pad(dt.getMinutes());
+    const ss = pad(dt.getSeconds());
+    // getTimezoneOffset returns minutes behind UTC (e.g., -480 for UTC+8)
+    const offsetMin = -dt.getTimezoneOffset();
+    const sign = offsetMin >= 0 ? '+' : '-';
+    const absMin = Math.abs(offsetMin);
+    const hours = Math.floor(absMin / 60);
+    const minutes = absMin % 60;
+    const offsetStr = minutes === 0 ? `${hours}` : `${hours}:${pad(minutes)}`;
+    // Use GMT+H or GMT+H:MM as per local timezone
+    return `${MM}/${DD}/${YYYY}, ${HH}:${mm}:${ss} GMT${sign}${offsetStr}`;
+  };
+
   const renderMessage = ({ item }: { item: Message }) => {
     const isOutgoing = item.sender === user?.username;
     const messageText = safeText(item.content || item.message || '');
@@ -1495,9 +1521,45 @@ export default function ChatScreen() {
       console.warn('Delete handler error:', err);
     }
   };
-  const handleExportClipboard = (withTimestamps: boolean) => {
-    // TODO: implement export to clipboard
-    closeContextMenu();
+  const handleExportClipboard = async (withTimestamps: boolean) => {
+    try {
+      const msg = contextMenuMessage;
+      closeContextMenu();
+      if (!msg) return;
+
+      const ts = withTimestamps ? `[${formatClipboardTimestamp(msg.timestamp)}] ` : '';
+      const header = `${ts}${msg.sender}: `;
+
+      let body = '';
+      // Include reply context if present
+      if (msg.reply_content) {
+        const replySender = msg.reply_sender || 'Unknown';
+        body += `↪ ${replySender}: ${msg.reply_content}\n`;
+      }
+
+      if (msg.type === 'text') {
+        const text = (msg.content ?? msg.message ?? '').toString();
+        // Strip trailing (edited) marker for clean copy
+        body += text.replace(/\s*\(edited\)\s*$/, '');
+      } else if (msg.type === 'file') {
+        const name = msg.file_name || 'file';
+        const url = msg.file_url || '';
+        const size = typeof msg.file_size === 'number' ? ` (${msg.file_size} bytes)` : '';
+        body += `Shared file: ${name}${size}${url ? `\n${url}` : ''}`;
+      } else if (msg.type === 'audio') {
+        body += 'Voice message';
+      } else {
+        // Fallback to any content
+        body += (msg.content ?? msg.message ?? '').toString();
+      }
+
+      const toCopy = header + body;
+      await Clipboard.setStringAsync(toCopy);
+      Alert.alert('Copied', 'Message copied to clipboard');
+    } catch (e) {
+      console.warn('Clipboard export failed:', e);
+      Alert.alert('Copy failed', 'Could not copy to clipboard.');
+    }
   };
   const handleExportDesktop = (withTimestamps: boolean) => {
     // TODO: implement export to desktop
