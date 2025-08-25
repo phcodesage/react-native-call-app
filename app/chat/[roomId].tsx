@@ -1734,9 +1734,8 @@ export default function ChatScreen() {
             ]}
             value={newMessage}
             onChangeText={handleTextChange}
-            onKeyPress={handleKeyPress}
-            onSubmitEditing={sendMessage}
-            returnKeyType="send"
+            // Do not send on Enter/newline; allow newline insertion instead
+            returnKeyType="default"
             enablesReturnKeyAutomatically
             placeholder="Type a message..."
             placeholderTextColor={isDark ? '#9ca3af' : '#6b7280'}
@@ -1762,7 +1761,7 @@ export default function ChatScreen() {
             {isSending ? (
               <ActivityIndicator size="small" color="#ffffff" />
             ) : (
-              <Ionicons name="send" size={20} color="#ffffff" />
+              <Text style={{ color: '#ffffff', fontWeight: '700' }}>Send</Text>
             )}
           </TouchableOpacity>
         </View>
@@ -2843,8 +2842,9 @@ const styles = StyleSheet.create({
   sendButton: {
     backgroundColor: '#420796',
     borderRadius: 20,
-    width: 40,
+    paddingHorizontal: 14,
     height: 40,
+    minWidth: 64,
     justifyContent: 'center',
     alignItems: 'center',
   },
