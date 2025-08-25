@@ -2003,6 +2003,47 @@ export default function ChatScreen() {
     return m.startsWith('video/');
   };
 
+  // Adapter for CallScreen chat UI
+  const callMessages = messages.map(m => ({
+    id: String(m.message_id),
+    text: (m.content ?? m.message ?? (m.type === 'file' ? (m.file_name || 'File') : '')) as string,
+    timestamp: new Date(m.timestamp),
+    isOwn: !!(user?.username && m.sender === user.username),
+    senderName: m.sender || 'unknown',
+  }));
+
+  const sendInCallMessage = async (text: string) => {
+    try {
+      const trimmed = (text || '').trim();
+      if (!trimmed || !roomId || !token || !socketRef.current) return;
+      const localTs = Date.now();
+      const isoTs = new Date(localTs).toISOString();
+      // Emit via existing chat channel
+      socketRef.current.emit('send_chat_message', {
+        room: roomId,
+        message: trimmed,
+        from: user?.username || 'Anonymous',
+        timestamp: isoTs,
+        client_id: localTs,
+      });
+      // Optimistic local echo
+      const localMsg: Message = {
+        message_id: localTs,
+        sender: user?.username || 'system',
+        content: trimmed,
+        timestamp: isoTs,
+        type: 'text',
+        status: 'sent',
+      };
+      setMessages(prev => [...prev, localMsg]);
+      // Play send sound and scroll
+      void messageSoundRef.current?.replayAsync().catch(() => {});
+      setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 80);
+    } catch (e) {
+      console.warn('sendInCallMessage failed:', e);
+    }
+  };
+
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: isDark ? '#111827' : '#ffffff' }]} edges={['top', 'left', 'right']}>
       {/* Header */}
@@ -2953,6 +2994,9 @@ export default function ChatScreen() {
             onToggleMute={handleToggleMute}
             onToggleVideo={handleToggleVideo}
             onSwitchCamera={handleSwitchCamera}
+            roomId={roomId as string}
+            onSendMessage={sendInCallMessage}
+            messages={callMessages as any}
           />
         </Modal>
       )}

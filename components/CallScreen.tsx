@@ -80,8 +80,14 @@ export const CallScreen: React.FC<CallScreenProps> = ({
   const [chatVisible, setChatVisible] = useState(false);
   const [messageText, setMessageText] = useState('');
   const [localVideoPosition] = useState(new Animated.ValueXY({ x: width - 140, y: 80 }));
+  const [chatAnim] = useState(new Animated.Value(0));
+  const [unreadCount, setUnreadCount] = useState(0);
   const controlsTimeoutRef = useRef<NodeJS.Timeout | undefined>(undefined);
   const flatListRef = useRef<FlatList>(null);
+  const lastSeenCountRef = useRef(0);
+  const isWide = width >= 420;
+  // Use widths that account for side margins so two/three fit in one row
+  const btnWidth = isWide ? '31.5%' : '47%';
 
   const hasVideo = (localStream?.getVideoTracks().length ?? 0) > 0 || (remoteStream?.getVideoTracks().length ?? 0) > 0;
 
@@ -105,6 +111,29 @@ export const CallScreen: React.FC<CallScreenProps> = ({
       }
     };
   }, []);
+
+  // Animate chat panel visibility and manage unread counter
+  useEffect(() => {
+    if (chatVisible) {
+      lastSeenCountRef.current = messages.length;
+      setUnreadCount(0);
+    }
+    Animated.timing(chatAnim, {
+      toValue: chatVisible ? 1 : 0,
+      duration: 220,
+      useNativeDriver: true,
+    }).start();
+  }, [chatVisible]);
+
+  useEffect(() => {
+    if (!chatVisible && messages.length > lastSeenCountRef.current) {
+      setUnreadCount(messages.length - lastSeenCountRef.current);
+    }
+  }, [messages]);
+
+  const openChat = () => setChatVisible(true);
+  const closeChat = () => setChatVisible(false);
+  const toggleChat = () => setChatVisible((v) => !v);
 
   const showControls = () => {
     setControlsVisible(true);
@@ -238,51 +267,63 @@ export const CallScreen: React.FC<CallScreenProps> = ({
         </PanGestureHandler>
       )}
 
-      {/* Chat Overlay */}
-      {chatVisible && (
-        <View style={styles.chatOverlay}>
-          <View style={styles.chatHeader}>
-            <Text style={styles.chatTitle}>Chat</Text>
-            <TouchableOpacity onPress={() => setChatVisible(false)}>
-              <Ionicons name="close" size={24} color="#ffffff" />
-            </TouchableOpacity>
-          </View>
-          
-          <FlatList
-            ref={flatListRef}
-            data={messages}
-            renderItem={renderChatMessage}
-            keyExtractor={(item) => item.id}
-            style={styles.chatMessages}
-            onContentSizeChange={() => flatListRef.current?.scrollToEnd()}
-          />
-          
-          <KeyboardAvoidingView 
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-            style={styles.chatInputContainer}
-          >
-            <TextInput
-              style={styles.chatInput}
-              value={messageText}
-              onChangeText={setMessageText}
-              placeholder="Type a message..."
-              placeholderTextColor="#9ca3af"
-              multiline
-              maxLength={500}
-            />
-            <TouchableOpacity
-              style={[
-                styles.sendButton,
-                { opacity: messageText.trim() ? 1 : 0.5 }
-              ]}
-              onPress={sendMessage}
-              disabled={!messageText.trim()}
-            >
-              <Ionicons name="send" size={20} color="#ffffff" />
-            </TouchableOpacity>
-          </KeyboardAvoidingView>
+      {/* Chat Overlay (animated, Skype-like) */}
+      <Animated.View
+        pointerEvents={chatVisible ? 'auto' : 'none'}
+        style={[
+          styles.chatOverlay,
+          {
+            transform: [
+              {
+                translateX: chatAnim.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [width, 0], // slide from fully off-screen
+                }),
+              },
+            ],
+          },
+        ]}
+      >
+        <View style={styles.chatHeader}>
+          <Text style={styles.chatTitle}>Chat</Text>
+          <TouchableOpacity onPress={closeChat} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
+            <Ionicons name="close" size={24} color="#ffffff" />
+          </TouchableOpacity>
         </View>
-      )}
+
+        <FlatList
+          ref={flatListRef}
+          data={messages}
+          renderItem={renderChatMessage}
+          keyExtractor={(item) => item.id}
+          style={styles.chatMessages}
+          onContentSizeChange={() => flatListRef.current?.scrollToEnd()}
+        />
+
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={styles.chatInputContainer}
+        >
+          <TextInput
+            style={styles.chatInput}
+            value={messageText}
+            onChangeText={setMessageText}
+            placeholder="Type a message..."
+            placeholderTextColor="#9ca3af"
+            multiline
+            maxLength={500}
+          />
+          <TouchableOpacity
+            style={[styles.sendButton, { opacity: messageText.trim() ? 1 : 0.5 }]}
+            onPress={sendMessage}
+            disabled={!messageText.trim()}
+          >
+            <Ionicons name="send" size={20} color="#ffffff" />
+          </TouchableOpacity>
+        </KeyboardAvoidingView>
+      </Animated.View>
+
+      {/* Full-screen chat overlay covers everything; no separate backdrop needed */}
     </GestureHandlerRootView>
   );
 
@@ -328,6 +369,18 @@ export const CallScreen: React.FC<CallScreenProps> = ({
             <Text style={styles.recipientNameHeader as any}>{recipientName}</Text>
             <Text style={styles.callDuration as any}>{callDuration}</Text>
           </View>
+
+          {/* Skype-like chat icon in header */}
+          {onSendMessage && (
+            <TouchableOpacity style={styles.headerChatButton as any} onPress={toggleChat} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
+              <Ionicons name="chatbubbles-outline" size={22} color="#ffffff" />
+              {unreadCount > 0 && !chatVisible && (
+                <View style={styles.headerChatBadge}>
+                  <Text style={styles.headerChatBadgeText}>{unreadCount}</Text>
+                </View>
+              )}
+            </TouchableOpacity>
+          )}
         </View>
       )}
 
@@ -338,13 +391,14 @@ export const CallScreen: React.FC<CallScreenProps> = ({
             {/* Chat Button - always available when onSendMessage exists */}
             {onSendMessage && (
               <TouchableOpacity
-                style={[styles.textButton as any, chatVisible && (styles.textButtonActive as any)]}
-                onPress={() => setChatVisible(!chatVisible)}
+                style={[styles.textButton as any, { width: btnWidth }, chatVisible && (styles.textButtonActive as any)]}
+                onPress={toggleChat}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               >
                 <Text style={styles.textButtonLabel as any}>{chatVisible ? 'Hide Chat' : 'Chat'}</Text>
-                {messages.length > 0 && (
+                {!chatVisible && unreadCount > 0 && (
                   <View style={styles.chatBadge}>
-                    <Text style={styles.chatBadgeText}>{messages.length}</Text>
+                    <Text style={styles.chatBadgeText}>{unreadCount}</Text>
                   </View>
                 )}
               </TouchableOpacity>
@@ -352,8 +406,9 @@ export const CallScreen: React.FC<CallScreenProps> = ({
 
             {/* Audio status/toggle */}
             <TouchableOpacity
-              style={[styles.textButton as any]}
+              style={[styles.textButton as any, { width: btnWidth }]}
               onPress={onToggleMute}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             >
               <Text style={styles.textButtonLabel as any}>Audio is: {isAudioMuted ? 'off' : 'on'}</Text>
             </TouchableOpacity>
@@ -361,8 +416,9 @@ export const CallScreen: React.FC<CallScreenProps> = ({
             {/* Video status/toggle (only for video-capable calls) */}
             {hasVideo && (
               <TouchableOpacity
-                style={[styles.textButton as any]}
+                style={[styles.textButton as any, { width: btnWidth }]}
                 onPress={onToggleVideo}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               >
                 <Text style={styles.textButtonLabel as any}>Video is: {isVideoMuted ? 'off' : 'on'}</Text>
               </TouchableOpacity>
@@ -371,8 +427,9 @@ export const CallScreen: React.FC<CallScreenProps> = ({
             {/* Switch Camera (only when video available and not muted) */}
             {hasVideo && !isVideoMuted && (
               <TouchableOpacity
-                style={[styles.textButton as any]}
+                style={[styles.textButton as any, { width: btnWidth }]}
                 onPress={onSwitchCamera}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               >
                 <Text style={styles.textButtonLabel as any}>Switch Camera</Text>
               </TouchableOpacity>
@@ -381,8 +438,9 @@ export const CallScreen: React.FC<CallScreenProps> = ({
             {/* Speaker toggle (audio-only) */}
             {!hasVideo && onToggleSpeaker && (
               <TouchableOpacity
-                style={[styles.textButton as any]}
+                style={[styles.textButton as any, { width: btnWidth }]}
                 onPress={onToggleSpeaker}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               >
                 <Text style={styles.textButtonLabel as any}>Speaker</Text>
               </TouchableOpacity>
@@ -393,6 +451,7 @@ export const CallScreen: React.FC<CallScreenProps> = ({
           <TouchableOpacity
             style={styles.endCallTextButton as any}
             onPress={handleEndCall}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
           >
             <Text style={styles.endCallText as any}>End Call</Text>
           </TouchableOpacity>
@@ -536,6 +595,36 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingBottom: 20,
     backgroundColor: 'rgba(0, 0, 0, 0.3)',
+    zIndex: 1000,
+    elevation: 1000,
+  },
+  headerChatButton: {
+    position: 'absolute',
+    top: 60,
+    right: 16,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  headerChatBadge: {
+    position: 'absolute',
+    top: -4,
+    right: -4,
+    backgroundColor: '#ef4444',
+    borderRadius: 9,
+    minWidth: 18,
+    height: 18,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 3,
+  },
+  headerChatBadgeText: {
+    color: '#ffffff',
+    fontSize: 11,
+    fontWeight: '700',
   },
   callInfo: {
     alignItems: 'center',
@@ -555,24 +644,32 @@ const styles = StyleSheet.create({
     bottom: 0,
     left: 0,
     right: 0,
-    paddingHorizontal: 40,
-    paddingBottom: 50,
-    paddingTop: 20,
-    backgroundColor: 'rgba(0, 0, 0, 0.3)',
+    paddingHorizontal: 12,
+    paddingBottom: 16,
+    paddingTop: 8,
+    backgroundColor: 'transparent',
     alignItems: 'center',
+    zIndex: 1000,
+    elevation: 1000,
   },
   controlRow: {
     flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 32,
-    gap: 12,
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    alignItems: 'stretch',
+    alignContent: 'flex-start',
+    width: '100%',
+    maxWidth: 520,
+    alignSelf: 'center',
+    marginBottom: 10,
+    paddingHorizontal: 8,
   },
   textButton: {
-    minWidth: 120,
-    height: 40,
-    paddingHorizontal: 16,
-    borderRadius: 20,
+    height: 44,
+    paddingHorizontal: 12,
+    marginHorizontal: 4,
+    marginVertical: 8,
+    borderRadius: 22,
     backgroundColor: 'rgba(255, 255, 255, 0.2)',
     justifyContent: 'center',
     alignItems: 'center',
@@ -586,12 +683,13 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   endCallTextButton: {
-    minWidth: 160,
+    minWidth: 180,
     height: 48,
     borderRadius: 24,
     backgroundColor: '#ef4444',
     justifyContent: 'center',
     alignItems: 'center',
+    marginTop: 4,
   },
   endCallText: {
     color: '#ffffff',
@@ -602,12 +700,15 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: 0,
     right: 0,
-    width: width * 0.8,
+    width: '100%',
     height: '100%',
     backgroundColor: 'rgba(0, 0, 0, 0.9)',
     borderLeftWidth: 1,
     borderLeftColor: 'rgba(255, 255, 255, 0.1)',
+    zIndex: 2000,
+    elevation: 2000,
   },
+  // Removed chatBackdrop since chatOverlay is full-screen
   chatHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
