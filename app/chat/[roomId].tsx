@@ -1792,9 +1792,14 @@ export default function ChatScreen() {
           animationType="fade"
           onRequestClose={() => setSelectedMessagePos(null)}
         >
-          <View style={styles.modalOverlay}>
+          <TouchableOpacity
+            activeOpacity={1}
+            style={styles.modalOverlay}
+            onPress={() => setSelectedMessagePos(null)}
+          >
             {selectedMessagePos ? (
-              <View
+              <TouchableOpacity
+                activeOpacity={1}
                 style={[
                   {
                     position: 'absolute',
@@ -1811,6 +1816,7 @@ export default function ChatScreen() {
                     paddingHorizontal: 12,
                   },
                 ]}
+                onPress={() => { /* absorb presses inside content */ }}
               >
               <View style={[
                 styles.emojiPickerContainer,
@@ -1841,9 +1847,9 @@ export default function ChatScreen() {
                 ))}
               </View>
               </View>
-              </View>
+              </TouchableOpacity>
             ) : null}
-          </View>
+          </TouchableOpacity>
         </Modal>
 
         {/* Emoji Picker */}
