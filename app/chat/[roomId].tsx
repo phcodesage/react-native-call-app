@@ -47,6 +47,7 @@ import { Image as ExpoImage } from 'expo-image';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as FileSystem from 'expo-file-system';
 import * as Clipboard from 'expo-clipboard';
+import * as Notifications from 'expo-notifications';
 
 const API_BASE_URL = ENV.API_BASE_URL;
 const SOCKET_URL = ENV.SOCKET_SERVER_URL;
@@ -119,6 +120,39 @@ export default function ChatScreen() {
   const [rgbR, setRgbR] = useState<string>('');
   const [rgbG, setRgbG] = useState<string>('');
   const [rgbB, setRgbB] = useState<string>('');
+
+  // Ask notification permission once to show success notifications after exports
+  useEffect(() => {
+    (async () => {
+      try {
+        await Notifications.requestPermissionsAsync();
+      } catch (e) {
+        // non-fatal
+        console.warn('Notification permission request failed:', e);
+      }
+    })();
+  }, []);
+  // Ensure notifications show while app is foregrounded and set Android channel
+  useEffect(() => {
+    Notifications.setNotificationHandler({
+      handleNotification: async () => ({
+        shouldShowAlert: true,
+        shouldPlaySound: false,
+        shouldSetBadge: false,
+        // Include fields expected by newer types to avoid lint errors
+        shouldShowBanner: true,
+        shouldShowList: true,
+      }),
+    });
+    if (Platform.OS === 'android') {
+      Notifications.setNotificationChannelAsync('default', {
+        name: 'default',
+        importance: Notifications.AndroidImportance.DEFAULT,
+        vibrationPattern: [0, 250, 250, 250],
+        lightColor: '#FF231F7C',
+      }).catch(() => {});
+    }
+  }, []);
   const [serverWarning, setServerWarning] = useState<string | null>(null);
   const [selectedMessageId, setSelectedMessageId] = useState<number | null>(null);
   // Anchor for reaction emoji picker: screen coordinates and direction
@@ -131,10 +165,43 @@ export default function ChatScreen() {
   const messageSoundRef = useRef<Audio.Sound | null>(null);
   // Input auto-grow up to 2 lines, then scroll inside
   const [inputHeight, setInputHeight] = useState<number>(40);
+
+  // Dev helper to verify notifications in debug builds
+  const testNotification = async () => {
+    try {
+      await Notifications.scheduleNotificationAsync({
+        content: {
+          title: 'Test Notification',
+          body: 'This is a local test notification (debug)'.trim(),
+        },
+        trigger: null,
+      });
+    } catch (e: any) {
+      Alert.alert('Notification error', e?.message || String(e));
+    }
+  };
   const [inputContainerHeight, setInputContainerHeight] = useState<number>(72);
   const [actionsContainerHeight, setActionsContainerHeight] = useState<number>(0);
   const INPUT_LINE_HEIGHT = 20; // should match visual line height
   const INPUT_VERTICAL_PADDING = 20; // paddingVertical 10 (top) + 10 (bottom)
+
+  // Persist user-chosen export directory on Android
+  const EXPORT_DIR_KEY = 'export_dir_uri';
+  const ensureAndroidExportDir = async (): Promise<string | null> => {
+    try {
+      const existing = await AsyncStorage.getItem(EXPORT_DIR_KEY);
+      if (existing) return existing;
+      const perm = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
+      if (perm.granted && perm.directoryUri) {
+        await AsyncStorage.setItem(EXPORT_DIR_KEY, perm.directoryUri);
+        return perm.directoryUri;
+      }
+      return null;
+    } catch (e) {
+      console.warn('ensureAndroidExportDir error:', e);
+      return null;
+    }
+  };
 
   // Mobile-friendly context menu state (bottom sheet)
   const [showContextMenu, setShowContextMenu] = useState(false);
@@ -1561,9 +1628,104 @@ export default function ChatScreen() {
       Alert.alert('Copy failed', 'Could not copy to clipboard.');
     }
   };
-  const handleExportDesktop = (withTimestamps: boolean) => {
-    // TODO: implement export to desktop
-    closeContextMenu();
+  const handleExportDesktop = async (withTimestamps: boolean) => {
+    try {
+      const msg = contextMenuMessage;
+      closeContextMenu();
+      if (!msg) return;
+
+      const tsPrefix = withTimestamps ? `[${formatClipboardTimestamp(msg.timestamp)}] ` : '';
+      const header = `${tsPrefix}${msg.sender}: `;
+
+      let body = '';
+      if (msg.reply_content) {
+        const replySender = msg.reply_sender || 'Unknown';
+        body += `↪ ${replySender}: ${msg.reply_content}\n`;
+      }
+      if (msg.type === 'text') {
+        const text = (msg.content ?? msg.message ?? '').toString();
+        body += text.replace(/\s*\(edited\)\s*$/, '');
+      } else if (msg.type === 'file') {
+        const name = msg.file_name || 'file';
+        const url = msg.file_url || '';
+        const size = typeof msg.file_size === 'number' ? ` (${msg.file_size} bytes)` : '';
+        body += `Shared file: ${name}${size}${url ? `\n${url}` : ''}`;
+      } else if (msg.type === 'audio') {
+        body += 'Voice message';
+      } else {
+        body += (msg.content ?? msg.message ?? '').toString();
+      }
+
+      const content = header + body + "\n";
+
+      // Build filename once
+      const dt = new Date();
+      const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`);
+      const stamp = `${dt.getFullYear()}${pad(dt.getMonth() + 1)}${pad(dt.getDate())}-${pad(dt.getHours())}${pad(dt.getMinutes())}${pad(dt.getSeconds())}`;
+      const safeRoom = (roomId || 'chat').toString().replace(/[^a-zA-Z0-9_-]+/g, '_');
+      const fileName = `message-${safeRoom}-${stamp}.txt`;
+
+      let fileUri: string;
+      if (Platform.OS === 'android') {
+        // Save into user-picked folder via SAF, persist choice
+        const dirUri = await ensureAndroidExportDir();
+        if (!dirUri) {
+          Alert.alert('Export cancelled', 'No folder selected.');
+          return;
+        }
+        // Create file and write content
+        const createdUri = await FileSystem.StorageAccessFramework.createFileAsync(
+          dirUri,
+          fileName,
+          'text/plain'
+        );
+        await FileSystem.writeAsStringAsync(createdUri, content, { encoding: FileSystem.EncodingType.UTF8 });
+        fileUri = createdUri;
+      } else {
+        // iOS/web: save to app documents dir
+        const exportDir = `${FileSystem.documentDirectory}exports/`;
+        try {
+          await FileSystem.makeDirectoryAsync(exportDir, { intermediates: true });
+        } catch {}
+        fileUri = exportDir + fileName;
+        await FileSystem.writeAsStringAsync(fileUri, content, { encoding: FileSystem.EncodingType.UTF8 });
+      }
+
+      // Build a friendly notification message
+      const notifTitle = 'Downloaded to device';
+      let notifBody = '';
+      if (Platform.OS === 'android') {
+        try {
+          const dirUri = await AsyncStorage.getItem(EXPORT_DIR_KEY);
+          if (dirUri) {
+            const afterTree = dirUri.split('tree/')[1] || '';
+            const afterColon = afterTree.split('%3A')[1] || afterTree;
+            const folderName = decodeURIComponent(afterColon);
+            notifBody = `Saved to "${folderName}" as ${fileName}`;
+          }
+        } catch {}
+      }
+      if (!notifBody) {
+        notifBody = `Saved as ${fileName}`;
+      }
+
+      // Notify user with the friendly destination
+      try {
+        await Notifications.scheduleNotificationAsync({
+          content: {
+            title: notifTitle,
+            body: notifBody,
+          },
+          trigger: null,
+        });
+      } catch (e) {
+        // If notifications are not available, fall back to alert
+        Alert.alert(notifTitle, notifBody);
+      }
+    } catch (e) {
+      console.warn('Export to device failed:', e);
+      Alert.alert('Export failed', 'Could not save the message to your device.');
+    }
   };
 
   const parseTimestampSafe = (value: any): number => {
@@ -1710,6 +1872,15 @@ export default function ChatScreen() {
           >
             <Ionicons name="videocam" size={18} color="#ffffff" />
           </TouchableOpacity>
+          {__DEV__ && (
+            <TouchableOpacity
+              style={[styles.headerIconPill, { backgroundColor: '#f59e0b' }]}
+              onPress={testNotification}
+              accessibilityLabel="Test Notification"
+            >
+              <Ionicons name="notifications" size={18} color="#ffffff" />
+            </TouchableOpacity>
+          )}
         </View>
       </View>
 
@@ -2663,10 +2834,10 @@ export default function ChatScreen() {
               <Text style={styles.contextItemText}>Export to Clipboard (TS off)</Text>
             </TouchableOpacity>
             <TouchableOpacity style={styles.contextItem} onPress={() => handleExportDesktop(true)}>
-              <Text style={styles.contextItemText}>Export to Desktop (TS on)</Text>
+              <Text style={styles.contextItemText}>Export to Device (TS on)</Text>
             </TouchableOpacity>
             <TouchableOpacity style={styles.contextItem} onPress={() => handleExportDesktop(false)}>
-              <Text style={styles.contextItemText}>Export to Desktop (TS off)</Text>
+              <Text style={styles.contextItemText}>Export to Device (TS off)</Text>
             </TouchableOpacity>
           </View>
         </TouchableOpacity>
