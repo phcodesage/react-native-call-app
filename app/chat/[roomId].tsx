@@ -86,6 +86,7 @@ export default function ChatScreen() {
   const contentHeightRef = useRef<number>(0);
   const listHeightRef = useRef<number>(0);
   const socketRef = useRef<Socket | null>(null);
+  const textInputRef = useRef<TextInput | null>(null);
   const isInitialLoadRef = useRef<boolean>(true);
   const isMountedRef = useRef<boolean>(true);
   const captureInProgressRef = useRef<boolean>(false);
@@ -98,6 +99,9 @@ export default function ChatScreen() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [newMessage, setNewMessage] = useState('');
+  // Editing state
+  const [editingMessageId, setEditingMessageId] = useState<number | null>(null);
+  const [editingOriginalText, setEditingOriginalText] = useState<string>('');
   const [isSending, setIsSending] = useState(false);
   const [typingUsers, setTypingUsers] = useState<{[key: string]: string}>({});
   const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -1198,6 +1202,14 @@ export default function ChatScreen() {
   };
 
   const sendMessage = async () => {
+    // If editing, save edit instead of sending new
+    if (editingMessageId) {
+      const text = newMessage.trim();
+      if (!text) return;
+      await saveEdit(editingMessageId, text);
+      return;
+    }
+
     if (!newMessage.trim() || !roomId || !token || isSending || !socketRef.current) return;
     
     const messageToSend = newMessage.trim();
@@ -1406,8 +1418,52 @@ export default function ChatScreen() {
     closeContextMenu();
   };
   const handleEdit = () => {
-    // TODO: implement edit for own messages
+    const msg = contextMenuMessage;
+    if (!msg) return closeContextMenu();
+    if (!user?.username) return closeContextMenu();
+    if (msg.sender !== user.username) {
+      Alert.alert('Not allowed', 'You can only edit your own messages.');
+      closeContextMenu();
+      return;
+    }
+    const original = safeText(msg.content || msg.message || '').replace(/\s*\(edited\)\s*$/, '');
+    setEditingMessageId(msg.message_id || null);
+    setEditingOriginalText(original);
+    setNewMessage(original);
     closeContextMenu();
+    setTimeout(() => textInputRef.current?.focus(), 50);
+  };
+
+  const cancelEdit = () => {
+    setEditingMessageId(null);
+    setEditingOriginalText('');
+    setNewMessage('');
+  };
+
+  const saveEdit = async (messageId: number, text: string) => {
+    try {
+      // Optimistic UI
+      setMessages(prev => prev.map(m => m.message_id === messageId ? { ...m, content: text + ' (edited)' } : m));
+      // Clear edit state early for snappy UX
+      setEditingMessageId(null);
+      setEditingOriginalText('');
+      setNewMessage('');
+
+      try {
+        await fetch(getApiUrl(`/edit_message/${messageId}`), {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify({ content: text }),
+        });
+      } catch (e) {
+        console.warn('Edit request failed:', e);
+      }
+    } catch (e) {
+      console.warn('saveEdit error:', e);
+    }
   };
   const handleDelete = async () => {
     try {
@@ -1879,6 +1935,22 @@ export default function ChatScreen() {
         </Modal>
 
         {/* Emoji Picker */}
+        {/* Edit Banner */}
+        {editingMessageId ? (
+          <View style={[
+            styles.editBanner,
+            { backgroundColor: isDark ? '#78350f' : '#fde68a', borderColor: isDark ? '#f59e0b55' : '#f59e0b' }
+          ]}>
+            <Text style={[styles.editBannerText, { color: isDark ? '#fde68a' : '#92400e' }]}>Editing message:</Text>
+            <Text style={[styles.editBannerText, { color: isDark ? '#fef3c7' : '#78350f', flex: 1 }]} numberOfLines={1}>
+              {editingOriginalText}
+            </Text>
+            <TouchableOpacity onPress={cancelEdit} style={[styles.editCancelBtn, { backgroundColor: isDark ? '#374151' : '#d1d5db' }]}>
+              <Text style={[styles.editCancelBtnText, { color: isDark ? '#e5e7eb' : '#1f2937' }]}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        ) : null}
+
         {/* Input Area */}
         <View onLayout={(e) => setInputContainerHeight(e.nativeEvent.layout.height)} style={[
           styles.inputContainer, 
@@ -1947,6 +2019,7 @@ export default function ChatScreen() {
                 textAlignVertical: 'top'
               }
             ]}
+            ref={textInputRef}
             value={newMessage}
             onChangeText={handleTextChange}
             // Do not send on Enter/newline; allow newline insertion instead
@@ -1976,7 +2049,7 @@ export default function ChatScreen() {
             {isSending ? (
               <ActivityIndicator size="small" color="#ffffff" />
             ) : (
-              <Text style={{ color: '#ffffff', fontWeight: '700' }}>Send</Text>
+              <Text style={{ color: '#ffffff', fontWeight: '700' }}>{editingMessageId ? 'Save' : 'Send'}</Text>
             )}
           </TouchableOpacity>
         </View>
@@ -2511,12 +2584,16 @@ export default function ChatScreen() {
             <TouchableOpacity style={styles.contextItem} onPress={handleReply}>
               <Text style={styles.contextItemText}>Reply</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.contextItem} onPress={handleEdit}>
-              <Text style={styles.contextItemText}>Edit</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={[styles.contextItem]} onPress={handleDelete}>
-              <Text style={[styles.contextItemText, styles.contextDanger]}>Delete</Text>
-            </TouchableOpacity>
+            {contextMenuMessage && user?.username && contextMenuMessage.sender === user.username ? (
+              <>
+                <TouchableOpacity style={styles.contextItem} onPress={handleEdit}>
+                  <Text style={styles.contextItemText}>Edit</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.contextItem]} onPress={handleDelete}>
+                  <Text style={[styles.contextItemText, styles.contextDanger]}>Delete</Text>
+                </TouchableOpacity>
+              </>
+            ) : null}
             <TouchableOpacity style={styles.contextItem} onPress={() => handleExportClipboard(true)}>
               <Text style={styles.contextItemText}>Export to Clipboard (TS on)</Text>
             </TouchableOpacity>
@@ -3211,6 +3288,32 @@ const styles = StyleSheet.create({
   },
   contextDanger: {
     color: '#f87171',
+    fontWeight: '700',
+  },
+  // Edit banner styles
+  editBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginHorizontal: 12,
+    marginBottom: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderLeftWidth: 4,
+    borderRadius: 8,
+  },
+  editBannerText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  editCancelBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
+    marginLeft: 8,
+  },
+  editCancelBtnText: {
+    fontSize: 12,
     fontWeight: '700',
   },
 });
