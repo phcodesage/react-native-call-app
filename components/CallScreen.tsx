@@ -54,6 +54,7 @@ interface CallScreenProps {
   onToggleSpeaker?: () => void;
   onSendMessage?: (message: string) => void;
   messages?: ChatMessage[];
+  onOpenFilePicker?: () => void;
 }
 
 export const CallScreen: React.FC<CallScreenProps> = ({
@@ -72,6 +73,7 @@ export const CallScreen: React.FC<CallScreenProps> = ({
   onToggleSpeaker,
   onSendMessage,
   messages = [],
+  onOpenFilePicker,
 }) => {
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
@@ -304,6 +306,16 @@ export const CallScreen: React.FC<CallScreenProps> = ({
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           style={styles.chatInputContainer}
         >
+          {onOpenFilePicker && (
+            <TouchableOpacity
+              style={styles.attachButton as any}
+              onPress={onOpenFilePicker}
+              accessibilityLabel="Attach file"
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <Ionicons name="attach" size={22} color="#ffffff" />
+            </TouchableOpacity>
+          )}
           <TextInput
             style={styles.chatInput}
             value={messageText}
@@ -448,6 +460,16 @@ export const CallScreen: React.FC<CallScreenProps> = ({
                 hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               >
                 <Text style={styles.textButtonLabel as any}>Speaker</Text>
+              </TouchableOpacity>
+            )}
+            {/* Send File (if file picker available) */}
+            {onOpenFilePicker && (
+              <TouchableOpacity
+                style={[styles.textButton as any, { width: btnWidth }]}
+                onPress={onOpenFilePicker}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <Text style={styles.textButtonLabel as any}>Send File</Text>
               </TouchableOpacity>
             )}
           </View>
@@ -765,6 +787,14 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: 'rgba(255, 255, 255, 0.1)',
     gap: 12,
+  },
+  attachButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   chatInput: {
     flex: 1,

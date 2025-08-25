@@ -3030,6 +3030,7 @@ export default function ChatScreen() {
             roomId={roomId as string}
             onSendMessage={sendInCallMessage}
             messages={callMessages as any}
+            onOpenFilePicker={() => setShowFilePreviewModal(true)}
           />
         </Modal>
       )}
