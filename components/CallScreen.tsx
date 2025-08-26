@@ -269,7 +269,46 @@ export const CallScreen: React.FC<CallScreenProps> = ({
         </PanGestureHandler>
       )}
 
-      {/* Chat Overlay (animated, Skype-like) */}
+      {/* Full-screen chat overlay covers everything; no separate backdrop needed */}
+    </GestureHandlerRootView>
+  );
+
+  const renderAudioCall = () => (
+    <TouchableOpacity
+      style={styles.audioContainer as any}
+      onPress={showControls}
+      activeOpacity={1}
+    >
+      <View style={styles.audioContent as any}>
+        <View style={styles.avatarContainer as any}>
+          <View style={styles.avatarLarge}>
+            <Text style={styles.avatarTextLarge}>
+              {recipientName.charAt(0).toUpperCase()}
+            </Text>
+          </View>
+          {isConnected && (
+            <View style={styles.audioIndicator as any}>
+              <View style={[styles.audioWave as any, styles.audioWave1 as any]} />
+              <View style={[styles.audioWave as any, styles.audioWave2 as any]} />
+              <View style={[styles.audioWave as any, styles.audioWave3 as any]} />
+            </View>
+          )}
+        </View>
+        <Text style={styles.recipientName as any}>{recipientName}</Text>
+        <Text style={styles.callStatus as any}>
+          {isConnected ? 'Connected' : 'Connecting...'}
+        </Text>
+      </View>
+    </TouchableOpacity>
+  );
+
+  return (
+    <SafeAreaView style={[styles.container, { backgroundColor: '#000' }]}>
+      <StatusBar barStyle="light-content" backgroundColor="#000" />
+      
+      {hasVideo ? renderVideoCall() : renderAudioCall()}
+
+      {/* Chat Overlay (animated, Skype-like) - shown over both audio and video UIs */}
       <Animated.View
         pointerEvents={chatVisible ? 'auto' : 'none'}
         style={[
@@ -279,7 +318,7 @@ export const CallScreen: React.FC<CallScreenProps> = ({
               {
                 translateX: chatAnim.interpolate({
                   inputRange: [0, 1],
-                  outputRange: [width, 0], // slide from fully off-screen
+                  outputRange: [width, 0],
                 }),
               },
             ],
@@ -333,7 +372,6 @@ export const CallScreen: React.FC<CallScreenProps> = ({
             }}
             onKeyPress={({ nativeEvent }) => {
               if (nativeEvent.key === 'Enter') {
-                // Best effort: trigger send on Enter for Android multiline
                 if (messageText.trim()) {
                   sendMessage();
                 }
@@ -350,45 +388,6 @@ export const CallScreen: React.FC<CallScreenProps> = ({
           </TouchableOpacity>
         </KeyboardAvoidingView>
       </Animated.View>
-
-      {/* Full-screen chat overlay covers everything; no separate backdrop needed */}
-    </GestureHandlerRootView>
-  );
-
-  const renderAudioCall = () => (
-    <TouchableOpacity
-      style={styles.audioContainer as any}
-      onPress={showControls}
-      activeOpacity={1}
-    >
-      <View style={styles.audioContent as any}>
-        <View style={styles.avatarContainer as any}>
-          <View style={styles.avatarLarge}>
-            <Text style={styles.avatarTextLarge}>
-              {recipientName.charAt(0).toUpperCase()}
-            </Text>
-          </View>
-          {isConnected && (
-            <View style={styles.audioIndicator as any}>
-              <View style={[styles.audioWave as any, styles.audioWave1 as any]} />
-              <View style={[styles.audioWave as any, styles.audioWave2 as any]} />
-              <View style={[styles.audioWave as any, styles.audioWave3 as any]} />
-            </View>
-          )}
-        </View>
-        <Text style={styles.recipientName as any}>{recipientName}</Text>
-        <Text style={styles.callStatus as any}>
-          {isConnected ? 'Connected' : 'Connecting...'}
-        </Text>
-      </View>
-    </TouchableOpacity>
-  );
-
-  return (
-    <SafeAreaView style={[styles.container, { backgroundColor: '#000' }]}>
-      <StatusBar barStyle="light-content" backgroundColor="#000" />
-      
-      {hasVideo ? renderVideoCall() : renderAudioCall()}
 
       {/* Call Info Header */}
       {controlsVisible && (
