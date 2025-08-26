@@ -98,9 +98,6 @@ export const CallScreen: React.FC<CallScreenProps> = ({
   const [localVideoPosition] = useState(new Animated.ValueXY({ x: width - 140, y: 80 }));
   const [chatAnim] = useState(new Animated.Value(0));
   const [unreadCount, setUnreadCount] = useState(0);
-  // Live message toasts when chat is hidden
-  const [liveToasts, setLiveToasts] = useState<Array<{ key: string; text: string; sender: string; isOwn: boolean }>>([]);
-  const toastTimersRef = useRef<Map<string, NodeJS.Timeout>>(new Map());
   const controlsTimeoutRef = useRef<NodeJS.Timeout | undefined>(undefined);
   const flatListRef = useRef<FlatList>(null);
   const lastSeenCountRef = useRef(0);
@@ -197,34 +194,7 @@ export const CallScreen: React.FC<CallScreenProps> = ({
     }
   }, [messages, chatVisible]);
 
-  // Push a brief toast for the latest incoming message when chat is hidden
-  useEffect(() => {
-    if (!messages?.length) return;
-    const last = messages[messages.length - 1];
-    if (!last) return;
-    if (chatVisible) return;
-    // Create a unique key per message id
-    const key = String((last as any).id ?? `${Date.now()}`);
-    // Avoid duplicates
-    if (liveToasts.find(t => t.key === key)) return;
-    const toast = { key, text: last.text, sender: last.senderName, isOwn: last.isOwn };
-    setLiveToasts(prev => {
-      // Prevent duplicates with the same text (e.g., multiple 'Call ended')
-      if (prev.some(t => (t.text || '') === (toast.text || ''))) return prev;
-      const next = [...prev, toast];
-      // keep last 3
-      return next.slice(-3);
-    });
-    // Auto-remove after 5s
-    const timer = setTimeout(() => {
-      setLiveToasts(prev => prev.filter(t => t.key !== key));
-      const m = toastTimersRef.current; if (m.has(key)) { m.delete(key); }
-    }, 5000);
-    toastTimersRef.current.set(key, timer as any);
-    return () => {
-      const m = toastTimersRef.current; const t = m.get(key); if (t) { clearTimeout(t); m.delete(key); }
-    };
-  }, [messages]);
+  // Floating live message toasts removed; messages only in chat overlay
 
   const openChat = () => setChatVisible(true);
   const closeChat = () => setChatVisible(false);
@@ -362,21 +332,7 @@ export const CallScreen: React.FC<CallScreenProps> = ({
         </PanGestureHandler>
       )}
 
-      {/* Floating live messages (when chat hidden) */}
-      {!chatVisible && liveToasts.length > 0 && (
-        <View style={styles.liveToastContainer}>
-          {liveToasts.map(t => (
-            <View key={t.key} style={styles.liveToast}>
-              <Text style={styles.liveToastSender} numberOfLines={1}>
-                {t.isOwn ? 'You' : (t.sender || 'Unknown')}
-              </Text>
-              <Text style={styles.liveToastText} numberOfLines={2}>
-                {t.text || ''}
-              </Text>
-            </View>
-          ))}
-        </View>
-      )}
+      {/* Floating live messages removed */}
     </GestureHandlerRootView>
   );
 
@@ -546,7 +502,7 @@ export const CallScreen: React.FC<CallScreenProps> = ({
               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             >
               <Ionicons name={isAudioMuted ? 'mic-off' : 'mic'} size={16} color="#ffffff" />
-              <Text style={styles.actionButtonText}>{isAudioMuted ? 'Mic Off' : 'Mic On'}</Text>
+              <Text style={styles.actionButtonText}>Mic is: {isAudioMuted ? 'off' : 'on'}</Text>
             </TouchableOpacity>
 
             {hasVideo && (
@@ -556,7 +512,7 @@ export const CallScreen: React.FC<CallScreenProps> = ({
                 hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               >
                 <Ionicons name={isVideoMuted ? 'videocam-off' : 'videocam'} size={16} color="#ffffff" />
-                <Text style={styles.actionButtonText}>{isVideoMuted ? 'Video Off' : 'Video On'}</Text>
+                <Text style={styles.actionButtonText}>Video is: {isVideoMuted ? 'off' : 'on'}</Text>
               </TouchableOpacity>
             )}
 
