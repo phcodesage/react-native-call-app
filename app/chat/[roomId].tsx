@@ -420,8 +420,8 @@ export default function ChatScreen() {
         allowsRecordingIOS: false,
         staysActiveInBackground: false,
         interruptionModeIOS: InterruptionModeIOS.DoNotMix,
-        interruptionModeAndroid: InterruptionModeAndroid.DuckOthers,
-        shouldDuckAndroid: true,
+        interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
+        shouldDuckAndroid: false,
         playThroughEarpieceAndroid: false,
       });
   
@@ -541,8 +541,8 @@ export default function ChatScreen() {
         allowsRecordingIOS: false,
         staysActiveInBackground: false,
         interruptionModeIOS: InterruptionModeIOS.DoNotMix,
-        interruptionModeAndroid: InterruptionModeAndroid.DuckOthers,
-        shouldDuckAndroid: true,
+        interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
+        shouldDuckAndroid: false,
         playThroughEarpieceAndroid: false,
       });
   

@@ -38,6 +38,8 @@ export function useCallFunctions({
   const [callDuration, setCallDuration] = useState('00:00');
   const webRTCServiceRef = useRef<WebRTCService | null>(null);
   const callDirectionRef = useRef<'outgoing' | 'incoming' | null>(null);
+  // Track if we've already prepared the incoming call (created PC and local tracks)
+  const incomingPreparedRef = useRef<boolean>(false);
 
   // Sounds for call states (outgoing only)
   const ringingSoundRef = useRef<Audio.Sound | null>(null);
@@ -338,10 +340,15 @@ export function useCallFunctions({
 
     try {
       if (!webRTCServiceRef.current) {
+        console.warn('WebRTC not initialized, initializing now...');
         await initializeWebRTC();
       }
       if (webRTCServiceRef.current) {
         await webRTCServiceRef.current.initializeCall(detectedCallType);
+        // Mark that we've already prepared PC/local stream for this incoming call
+        incomingPreparedRef.current = true;
+      } else {
+        throw new Error('Failed to initialize WebRTC service');
       }
       console.log('WebRTC initialized for incoming call');
     } catch (error) {
@@ -363,9 +370,10 @@ export function useCallFunctions({
         console.warn('WebRTC not initialized, initializing now...');
         await initializeWebRTC();
       }
-      if (webRTCServiceRef.current) {
+      // If we've already prepared PC/local stream during ringing, do not re-initialize
+      if (webRTCServiceRef.current && !incomingPreparedRef.current) {
         await webRTCServiceRef.current.initializeCall(incomingCallType);
-      } else {
+      } else if (!webRTCServiceRef.current) {
         throw new Error('Failed to initialize WebRTC service');
       }
 
@@ -464,6 +472,8 @@ export function useCallFunctions({
     if (pendingOfferRef?.current) {
       pendingOfferRef.current = null;
     }
+    // Reset incoming preparation flag
+    incomingPreparedRef.current = false;
   };
 
   const handleToggleMute = () => {

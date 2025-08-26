@@ -10,10 +10,9 @@ import 'react-native-reanimated';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { AuthGuard } from '@/components/AuthGuard';
 import { AlertProvider } from '@/hooks/useCustomAlert';
-import { useColorScheme } from '@/hooks/useColorScheme';
+ 
 
 export default function RootLayout() {
-  const colorScheme = useColorScheme();
   const [loaded] = useFonts({
     SpaceMono: require('../assets/fonts/SpaceMono-Regular.ttf'),
   });
@@ -28,22 +27,30 @@ export default function RootLayout() {
       <AuthProvider>
         <AlertProvider>
           <SafeAreaProvider>
-            <NavigationThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-              <AuthGuard>
-                <Stack>
-                  <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-                  <Stack.Screen name="login" options={{ headerShown: false }} />
-                  <Stack.Screen name="signup" options={{ headerShown: false }} />
-                  <Stack.Screen name="reset-password" options={{ headerShown: false }} />
-                  <Stack.Screen name="chat/[roomId]" options={{ headerShown: false }} />
-                  <Stack.Screen name="+not-found" />
-                </Stack>
-              </AuthGuard>
-              <StatusBar style="auto" translucent={false} backgroundColor={colorScheme === 'dark' ? '#1f2937' : '#f9fafb'} />
-            </NavigationThemeProvider>
+            <InnerApp />
           </SafeAreaProvider>
         </AlertProvider>
       </AuthProvider>
     </CustomThemeProvider>
   );
 }
+
+function InnerApp() {
+  const { theme } = useTheme();
+  return (
+    <NavigationThemeProvider value={theme === 'dark' ? DarkTheme : DefaultTheme}>
+      <AuthGuard>
+        <Stack>
+          <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+          <Stack.Screen name="login" options={{ headerShown: false }} />
+          <Stack.Screen name="signup" options={{ headerShown: false }} />
+          <Stack.Screen name="reset-password" options={{ headerShown: false }} />
+          <Stack.Screen name="chat/[roomId]" options={{ headerShown: false }} />
+          <Stack.Screen name="+not-found" />
+        </Stack>
+      </AuthGuard>
+      <StatusBar style={theme === 'dark' ? 'light' : 'dark'} translucent={false} backgroundColor={theme === 'dark' ? '#1f2937' : '#f9fafb'} />
+    </NavigationThemeProvider>
+  );
+}
+
