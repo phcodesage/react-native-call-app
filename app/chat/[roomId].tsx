@@ -2186,6 +2186,13 @@ export default function ChatScreen() {
     timestamp: new Date(m.timestamp),
     isOwn: !!(user?.username && m.sender === user.username),
     senderName: m.sender || 'unknown',
+    // Extend with media fields for in-call overlay
+    type: (m.type === 'file' ? 'file' : 'text') as 'text' | 'file',
+    file_url: m.file_url,
+    file_id: m.file_id,
+    file_name: m.file_name,
+    file_type: m.file_type,
+    file_size: m.file_size,
   }));
 
   const sendInCallMessage = async (text: string) => {

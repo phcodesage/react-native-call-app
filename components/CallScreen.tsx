@@ -22,6 +22,7 @@ import * as Notifications from 'expo-notifications';
 import CallOngoingNotification from '../services/CallOngoingNotification';
 import AndroidForegroundCallService from '../services/AndroidForegroundCallService';
 import ChangeColorModal from './change-color/ChangeColorModal';
+import FileMessage from './FileMessage';
 
 // RTCView props interface for proper typing
 interface RTCViewProps {
@@ -36,10 +37,17 @@ const { width, height } = Dimensions.get('window');
 
 interface ChatMessage {
   id: string;
-  text: string;
+  text?: string;
   timestamp: Date;
   isOwn: boolean;
   senderName: string;
+  type?: 'text' | 'file';
+  // Media/file fields (mirrors main chat subset)
+  file_url?: string;
+  file_id?: string;
+  file_name?: string;
+  file_type?: string;
+  file_size?: number;
 }
 
 interface CallScreenProps {
@@ -256,27 +264,60 @@ export const CallScreen: React.FC<CallScreenProps> = ({
     }
   };
 
-  const renderChatMessage = ({ item }: { item: ChatMessage }) => (
-    <View style={[
-      styles.messageContainer,
-      item.isOwn ? styles.ownMessage : styles.otherMessage
-    ]}>
-      <Text style={[
-        styles.messageText,
-        { color: item.isOwn ? '#ffffff' : '#000000' }
-      ]}>
-        {item.text}
-      </Text>
-      {showTimestamps && (
-        <Text style={[
-          styles.messageTime,
-          { color: item.isOwn ? 'rgba(255,255,255,0.7)' : 'rgba(0,0,0,0.5)' }
+  const renderChatMessage = ({ item }: { item: ChatMessage }) => {
+    // File/media message
+    if (item.type === 'file') {
+      return (
+        <View style={[
+          styles.messageContainer,
+          item.isOwn ? styles.ownMessage : styles.otherMessage
         ]}>
-          {item.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+          <FileMessage
+            file_id={item.file_id}
+            file_name={item.file_name}
+            file_type={item.file_type}
+            file_size={item.file_size}
+            file_url={item.file_url}
+            sender={item.senderName}
+            timestamp={item.timestamp.toISOString()}
+            isOutgoing={item.isOwn}
+            isDark={item.isOwn}
+          />
+          {showTimestamps && (
+            <Text style={[
+              styles.messageTime,
+              { color: item.isOwn ? 'rgba(255,255,255,0.7)' : 'rgba(0,0,0,0.5)' }
+            ]}>
+              {item.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+            </Text>
+          )}
+        </View>
+      );
+    }
+
+    // Default: text message
+    return (
+      <View style={[
+        styles.messageContainer,
+        item.isOwn ? styles.ownMessage : styles.otherMessage
+      ]}>
+        <Text style={[
+          styles.messageText,
+          { color: item.isOwn ? '#ffffff' : '#000000' }
+        ]}>
+          {item.text}
         </Text>
-      )}
-    </View>
-  );
+        {showTimestamps && (
+          <Text style={[
+            styles.messageTime,
+            { color: item.isOwn ? 'rgba(255,255,255,0.7)' : 'rgba(0,0,0,0.5)' }
+          ]}>
+            {item.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+          </Text>
+        )}
+      </View>
+    );
+  };
 
   const renderVideoCall = () => (
     <GestureHandlerRootView style={styles.videoContainer}>
@@ -418,16 +459,6 @@ export const CallScreen: React.FC<CallScreenProps> = ({
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           style={styles.chatInputContainer}
         >
-          {onOpenFilePicker && (
-            <TouchableOpacity
-              style={styles.attachButton}
-              onPress={onOpenFilePicker}
-              accessibilityLabel="Attach file"
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            >
-              <Ionicons name="attach" size={22} color="#ffffff" />
-            </TouchableOpacity>
-          )}
           <TextInput
             style={styles.chatInput}
             value={messageText}
@@ -556,6 +587,17 @@ export const CallScreen: React.FC<CallScreenProps> = ({
               >
                 <Ionicons name="camera-reverse" size={16} color="#ffffff" />
                 <Text style={styles.actionButtonText}>Switch</Text>
+              </TouchableOpacity>
+            )}
+
+            {onOpenFilePicker && (
+              <TouchableOpacity
+                style={[styles.actionButton, { backgroundColor: '#3b82f6' }]}
+                onPress={onOpenFilePicker}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <Ionicons name="document" size={16} color="#ffffff" />
+                <Text style={styles.actionButtonText}>Send File</Text>
               </TouchableOpacity>
             )}
 
