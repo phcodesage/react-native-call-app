@@ -58,6 +58,12 @@ interface CallScreenProps {
   onSendMessage?: (message: string) => void;
   messages?: ChatMessage[];
   onOpenFilePicker?: () => void;
+  // Extra quick actions (all optional)
+  onOpenCamera?: () => void;
+  onRingDoorbell?: () => void;
+  onOpenChangeColor?: () => void;
+  onToggleTimestamps?: () => void;
+  showTimestamps?: boolean;
 }
 
 export const CallScreen: React.FC<CallScreenProps> = ({
@@ -77,6 +83,11 @@ export const CallScreen: React.FC<CallScreenProps> = ({
   onSendMessage,
   messages = [],
   onOpenFilePicker,
+  onOpenCamera,
+  onRingDoorbell,
+  onOpenChangeColor,
+  onToggleTimestamps,
+  showTimestamps,
 }) => {
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
@@ -480,6 +491,21 @@ export const CallScreen: React.FC<CallScreenProps> = ({
             <Ionicons name="send" size={20} color="#ffffff" />
           </TouchableOpacity>
         </KeyboardAvoidingView>
+
+        {/* Chat footer actions (below input) */}
+        {onToggleTimestamps && (
+          <View style={styles.chatFooter}>
+            <TouchableOpacity
+              style={[styles.chatFooterButton, { backgroundColor: '#8b5cf6' }]}
+              onPress={onToggleTimestamps}
+            >
+              <Ionicons name="time" size={16} color="#ffffff" />
+              <Text style={styles.chatFooterButtonText}>
+                {showTimestamps ? 'Hide Timestamps' : 'Show Timestamps'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        )}
       </Animated.View>
 
       {/* Call Info Header */}
@@ -496,15 +522,16 @@ export const CallScreen: React.FC<CallScreenProps> = ({
       {/* Call Controls */}
       {controlsVisible && (
         <View style={styles.controls}>
-          <View style={styles.controlRow}>
-            {/* Chat Button - always available when onSendMessage exists */}
+          {/* Primary Controls (compact, icon buttons) */}
+          <View style={styles.controlGrid}>
             {onSendMessage && (
               <TouchableOpacity
-                style={[styles.textButton, { width: btnWidth }, chatVisible && styles.textButtonActive]}
+                style={[styles.actionButton, { backgroundColor: '#420796' }]}
                 onPress={toggleChat}
                 hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               >
-                <Text style={styles.textButtonLabel}>{chatVisible ? 'Hide Chat' : 'Chat'}</Text>
+                <Ionicons name={chatVisible ? 'chatbubble' : 'chatbubble-outline'} size={16} color="#ffffff" />
+                <Text style={styles.actionButtonText}>{chatVisible ? 'Hide Chat' : 'Chat'}</Text>
                 {!chatVisible && unreadCount > 0 && (
                   <View style={styles.chatBadge}>
                     <Text style={styles.chatBadgeText}>{unreadCount}</Text>
@@ -513,55 +540,87 @@ export const CallScreen: React.FC<CallScreenProps> = ({
               </TouchableOpacity>
             )}
 
-            {/* Audio status/toggle */}
             <TouchableOpacity
-              style={[styles.textButton, { width: btnWidth }]}
+              style={[styles.actionButton, { backgroundColor: isAudioMuted ? '#4b5563' : '#10b981' }]}
               onPress={onToggleMute}
               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             >
-              <Text style={styles.textButtonLabel}>Audio is: {isAudioMuted ? 'off' : 'on'}</Text>
+              <Ionicons name={isAudioMuted ? 'mic-off' : 'mic'} size={16} color="#ffffff" />
+              <Text style={styles.actionButtonText}>{isAudioMuted ? 'Mic Off' : 'Mic On'}</Text>
             </TouchableOpacity>
 
-            {/* Video status/toggle (only for video-capable calls) */}
             {hasVideo && (
               <TouchableOpacity
-                style={[styles.textButton, { width: btnWidth }]}
+                style={[styles.actionButton, { backgroundColor: isVideoMuted ? '#4b5563' : '#3b82f6' }]}
                 onPress={onToggleVideo}
                 hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               >
-                <Text style={styles.textButtonLabel}>Video is: {isVideoMuted ? 'off' : 'on'}</Text>
+                <Ionicons name={isVideoMuted ? 'videocam-off' : 'videocam'} size={16} color="#ffffff" />
+                <Text style={styles.actionButtonText}>{isVideoMuted ? 'Video Off' : 'Video On'}</Text>
               </TouchableOpacity>
             )}
 
-            {/* Switch Camera (only when video available and not muted) */}
             {hasVideo && !isVideoMuted && (
               <TouchableOpacity
-                style={[styles.textButton, { width: btnWidth }]}
+                style={[styles.actionButton, { backgroundColor: '#6b7280' }]}
                 onPress={onSwitchCamera}
                 hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               >
-                <Text style={styles.textButtonLabel}>Switch Camera</Text>
+                <Ionicons name="camera-reverse" size={16} color="#ffffff" />
+                <Text style={styles.actionButtonText}>Switch</Text>
               </TouchableOpacity>
             )}
 
-            {/* Speaker toggle (audio-only) */}
             {!hasVideo && onToggleSpeaker && (
               <TouchableOpacity
-                style={[styles.textButton, { width: btnWidth }]}
+                style={[styles.actionButton, { backgroundColor: '#6b7280' }]}
                 onPress={onToggleSpeaker}
                 hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               >
-                <Text style={styles.textButtonLabel}>Speaker</Text>
+                <Ionicons name="volume-high" size={16} color="#ffffff" />
+                <Text style={styles.actionButtonText}>Speaker</Text>
               </TouchableOpacity>
             )}
-            {/* Send File (if file picker available) */}
-            {onOpenFilePicker && (
+          </View>
+
+          {/* Quick Actions (compact) */}
+          <View style={styles.actionGrid}>
+            {/* Only show Camera/Send File on audio-only calls */}
+            {!hasVideo && onOpenCamera && (
               <TouchableOpacity
-                style={[styles.textButton, { width: btnWidth }]}
-                onPress={onOpenFilePicker}
-                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                style={[styles.actionButton, { backgroundColor: '#f59e0b' }]}
+                onPress={onOpenCamera}
               >
-                <Text style={styles.textButtonLabel}>Send File</Text>
+                <Ionicons name="camera" size={16} color="#ffffff" />
+                <Text style={styles.actionButtonText}>Camera</Text>
+              </TouchableOpacity>
+            )}
+            {!hasVideo && onOpenFilePicker && (
+              <TouchableOpacity
+                style={[styles.actionButton, { backgroundColor: '#3b82f6' }]}
+                onPress={onOpenFilePicker}
+              >
+                <Ionicons name="document" size={16} color="#ffffff" />
+                <Text style={styles.actionButtonText}>Send File</Text>
+              </TouchableOpacity>
+            )}
+            {/* Always keep these */}
+            {onRingDoorbell && (
+              <TouchableOpacity
+                style={[styles.actionButton, { backgroundColor: '#10b981' }]}
+                onPress={onRingDoorbell}
+              >
+                <Ionicons name="notifications" size={16} color="#ffffff" />
+                <Text style={styles.actionButtonText}>Ring Doorbell</Text>
+              </TouchableOpacity>
+            )}
+            {onOpenChangeColor && (
+              <TouchableOpacity
+                style={[styles.actionButton, { backgroundColor: '#6366f1' }]}
+                onPress={onOpenChangeColor}
+              >
+                <Ionicons name="color-palette" size={16} color="#ffffff" />
+                <Text style={styles.actionButtonText}>Change Color</Text>
               </TouchableOpacity>
             )}
           </View>
@@ -767,12 +826,22 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     paddingHorizontal: 12,
-    paddingBottom: 16,
+    paddingBottom: 10,
     paddingTop: 8,
     backgroundColor: 'transparent',
     alignItems: 'center',
     zIndex: 1000,
     elevation: 1000,
+  },
+  controlGrid: {
+    width: '100%',
+    maxWidth: 520,
+    alignSelf: 'center',
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    paddingHorizontal: 8,
+    marginBottom: 8,
   },
   controlRow: {
     flexDirection: 'row',
@@ -803,6 +872,33 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     fontSize: 14,
     fontWeight: '600',
+  },
+  actionGrid: {
+    width: '100%',
+    maxWidth: 520,
+    alignSelf: 'center',
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    paddingHorizontal: 8,
+    marginBottom: 6,
+  },
+  actionButton: {
+    flexGrow: 1,
+    flexBasis: '48%',
+    minHeight: 40,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  actionButtonText: {
+    color: '#ffffff',
+    fontWeight: '700',
+    fontSize: 14,
   },
   endCallTextButton: {
     minWidth: 180,
@@ -907,6 +1003,24 @@ const styles = StyleSheet.create({
     backgroundColor: '#420796',
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  chatFooter: {
+    paddingHorizontal: 16,
+    paddingBottom: 12,
+  },
+  chatFooterButton: {
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 10,
+  },
+  chatFooterButtonText: {
+    color: '#ffffff',
+    fontWeight: '700',
+    fontSize: 14,
   },
   chatBadge: {
     position: 'absolute',

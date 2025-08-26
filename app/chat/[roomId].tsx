@@ -3174,6 +3174,19 @@ export default function ChatScreen() {
             onSendMessage={sendInCallMessage}
             messages={callMessages as any}
             onOpenFilePicker={openQuickFilePicker}
+            onOpenCamera={async () => {
+              try {
+                if (!cameraPerm?.granted) {
+                  const perm = await requestCameraPerm();
+                  if (!perm.granted) return;
+                }
+                setCameraVisible(true);
+              } catch {}
+            }}
+            onRingDoorbell={sendNotification}
+            onOpenChangeColor={() => setShowColorPicker((v) => !v)}
+            onToggleTimestamps={() => setShowTimestamps((v) => !v)}
+            showTimestamps={showTimestamps}
           />
         </Modal>
       )}
