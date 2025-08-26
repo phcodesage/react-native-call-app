@@ -188,6 +188,35 @@ export default function ChatScreen() {
       Alert.alert('Notification error', e?.message || String(e));
     }
   };
+
+  // Quick picker for in-call "Send File" button
+  const openQuickFilePicker = async () => {
+    try {
+      setUploadError(null);
+      // Expo DocumentPicker API (SDK 53+)
+      const result = await DocumentPicker.getDocumentAsync({
+        multiple: false,
+        copyToCacheDirectory: true,
+        type: '*/*',
+      });
+      const canceled = (result as any).canceled === true || (result as any).type === 'cancel';
+      if (canceled) return;
+      const asset = (result as any).assets?.[0] ?? result;
+      if (!asset?.uri) return;
+      const file = {
+        uri: asset.uri as string,
+        name: (asset.name as string) || 'file',
+        type: (asset.mimeType as string) || guessMimeType(asset.name as string, asset.uri as string),
+        size: Number(asset.size ?? 0),
+      };
+      setPickedFile(file);
+      setIsPickedFromCamera(false);
+      setShowFilePreviewModal(true);
+    } catch (e) {
+      Alert.alert('Error', 'Failed to open file picker');
+      console.warn('[QuickPicker] error:', e);
+    }
+  };
   const [inputContainerHeight, setInputContainerHeight] = useState<number>(72);
   const [actionsContainerHeight, setActionsContainerHeight] = useState<number>(0);
   const INPUT_LINE_HEIGHT = 20; // should match visual line height
@@ -3144,7 +3173,7 @@ export default function ChatScreen() {
             roomId={roomId as string}
             onSendMessage={sendInCallMessage}
             messages={callMessages as any}
-            onOpenFilePicker={() => setShowFilePreviewModal(true)}
+            onOpenFilePicker={openQuickFilePicker}
           />
         </Modal>
       )}
