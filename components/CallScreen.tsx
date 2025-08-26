@@ -267,12 +267,14 @@ export const CallScreen: React.FC<CallScreenProps> = ({
       ]}>
         {item.text}
       </Text>
-      <Text style={[
-        styles.messageTime,
-        { color: item.isOwn ? 'rgba(255,255,255,0.7)' : 'rgba(0,0,0,0.5)' }
-      ]}>
-        {item.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-      </Text>
+      {showTimestamps && (
+        <Text style={[
+          styles.messageTime,
+          { color: item.isOwn ? 'rgba(255,255,255,0.7)' : 'rgba(0,0,0,0.5)' }
+        ]}>
+          {item.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+        </Text>
+      )}
     </View>
   );
 
