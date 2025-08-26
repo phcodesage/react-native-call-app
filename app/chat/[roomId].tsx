@@ -170,6 +170,10 @@ export default function ChatScreen() {
   // Input auto-grow up to 2 lines, then scroll inside
   const [inputHeight, setInputHeight] = useState<number>(40);
 
+  // Map local echo client_id <-> server message_id to bridge live events (e.g., reactions)
+  const clientIdToServerIdRef = useRef(new Map<number, number>());
+  const serverIdToClientIdRef = useRef(new Map<number, number>());
+
   // Dev helper to verify notifications in debug builds
   const testNotification = async () => {
     try {
@@ -238,10 +242,15 @@ export default function ChatScreen() {
   // Normalize backend reactions shape to emoji->users map.
   // Accepts either { username: emoji } or { emoji: [users] } and produces { emoji: [users] }
   const normalizeReactions = (input: any): { [emoji: string]: string[] } => {
-    if (!input) return {};
+    if (!input) {
+      console.log('[reactions][normalize] input is empty/null -> {}');
+      return {};
+    }
+    console.log('[reactions][normalize] input:', input);
     // If already in emoji->users form
     const firstVal = input && typeof input === 'object' ? (Object.values(input as any)[0] as any) : undefined;
     if (firstVal && Array.isArray(firstVal)) {
+      console.log('[reactions][normalize] detected emoji->users map, returning as-is');
       return input as { [emoji: string]: string[] };
     }
     // username->emoji form
@@ -251,6 +260,7 @@ export default function ChatScreen() {
       if (!result[e]) result[e] = [];
       if (!result[e].includes(u)) result[e].push(u);
     });
+    console.log('[reactions][normalize] converted to emoji->users:', result);
     return result;
   };
 
@@ -752,7 +762,7 @@ export default function ChatScreen() {
 
     // Flask backend: broadcast after /react_message and /remove_reaction
     socket.on('message_reactions_updated', (data: any) => {
-      console.log('[socket] message_reactions_updated:', data);
+      console.log('[socket] message_reactions_updated payload:', data);
       handleIncomingReaction(data);
     });
 
@@ -931,45 +941,67 @@ export default function ChatScreen() {
   };
 
   const handleIncomingReaction = (data: { message_id: number | string; reactions: any }) => {
-    const normalized = normalizeReactions(data.reactions);
-    const idNum = typeof data.message_id === 'string' ? Number(data.message_id) : data.message_id;
-    setMessages(prev => prev.map(msg => (msg.message_id === idNum ? { ...msg, reactions: normalized } : msg)));
-  };
-
-  const handleSendReaction = async (messageId: number, emoji: string) => {
-    if (!roomId || !user?.username) return;
-    // Optimistic update
-    setMessages(prev => prev.map(m => (m.message_id === messageId ? { ...m, reactions: addUserReactionLocal(m.reactions, user.username!, emoji) } : m)));
-    setSelectedMessagePos(null);
     try {
-      await fetch(getApiUrl('/react_message'), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({ message_id: messageId, emoji, username: user.username, room: roomId }),
-      });
-    } catch (e) {
-      console.warn('Failed to send reaction:', e);
-    }
-  };
+      const idNum = typeof data.message_id === 'string' ? Number(data.message_id) : data.message_id;
+      const normalized = normalizeReactions(data.reactions);
+      console.log('[reactions][apply] for message:', idNum, 'normalized:', normalized);
 
-  const handleRemoveReaction = async (messageId: number) => {
-    if (!roomId || !user?.username) return;
-    // Optimistic remove
-    setMessages(prev => prev.map(m => (m.message_id === messageId ? { ...m, reactions: removeUserReactionLocal(m.reactions, user.username!) } : m)));
-    try {
-      await fetch(getApiUrl('/remove_reaction'), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({ message_id: messageId, username: user.username, room: roomId }),
+      // 1) Try exact server message_id match
+      let foundExact = false;
+      setMessages(prev => {
+        const idx = prev.findIndex(m => m.message_id === idNum);
+        if (idx >= 0) {
+          foundExact = true;
+          const copy = [...prev];
+          copy[idx] = { ...copy[idx], reactions: normalized };
+          return copy;
+        }
+        return prev;
       });
+      if (foundExact) {
+        console.log('[reactions][apply] updated by server id match', idNum);
+        return;
+      }
+
+      // 2) Try mapping from server id -> client echo id
+      const mappedClientId = serverIdToClientIdRef.current.get(idNum);
+      if (mappedClientId) {
+        console.log('[reactions][apply] found server->client mapping', idNum, '->', mappedClientId);
+        let updatedViaMap = false;
+        setMessages(prev => {
+          const idx = prev.findIndex(m => m.client_id === mappedClientId);
+          if (idx >= 0) {
+            updatedViaMap = true;
+            const copy = [...prev];
+            copy[idx] = { ...copy[idx], reactions: normalized };
+            return copy;
+          }
+          return prev;
+        });
+        if (updatedViaMap) return;
+      }
+
+      // 3) Heuristic: update most recent undelivered message from me (typical local echo)
+      let updatedHeuristic = false;
+      setMessages(prev => {
+        for (let i = prev.length - 1; i >= 0; i--) {
+          const m = prev[i];
+          if (m.sender === user?.username && m.status !== 'delivered' && m.message_id !== idNum) {
+            const copy = [...prev];
+            copy[i] = { ...copy[i], reactions: normalized };
+            updatedHeuristic = true;
+            console.log('[reactions][apply] heuristic applied to local echo index', i);
+            return copy;
+          }
+        }
+        return prev;
+      });
+      if (updatedHeuristic) return;
+
+      // 4) Last resort: do not refresh automatically; just log
+      console.warn('[reactions][apply] message id not found in state (no auto-refresh):', idNum);
     } catch (e) {
-      console.warn('Failed to remove reaction:', e);
+      console.warn('[reactions][apply] failed:', e);
     }
   };
 
@@ -979,6 +1011,51 @@ export default function ChatScreen() {
         msg.message_id === messageId ? { ...msg, status } : msg
       )
     );
+  };
+
+  const handleSendReaction = async (messageId: number, emoji: string) => {
+    if (!roomId || !user?.username) return;
+    // Optimistic update
+    console.log('[reactions][send] optimistic add', { messageId, emoji, user: user.username });
+    setMessages(prev => prev.map(m => (m.message_id === messageId ? { ...m, reactions: addUserReactionLocal(m.reactions, user.username!, emoji) } : m)));
+    setSelectedMessagePos(null);
+    try {
+      console.log('[reactions][send] POST /react_message');
+      const resp = await fetch(getApiUrl('/react_message'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+        },
+        body: JSON.stringify({ room: roomId, message_id: messageId, emoji, username: user.username }),
+      });
+      const json = await resp.json().catch(() => null);
+      console.log('[reactions][send] server response', resp.status, json);
+    } catch (e) {
+      console.warn('Failed to send reaction:', e);
+    }
+  };
+
+  const handleRemoveReaction = async (messageId: number) => {
+    if (!roomId || !user?.username) return;
+    // Optimistic remove
+    console.log('[reactions][remove] optimistic remove', { messageId, user: user.username });
+    setMessages(prev => prev.map(m => (m.message_id === messageId ? { ...m, reactions: removeUserReactionLocal(m.reactions, user.username!) } : m)));
+    try {
+      console.log('[reactions][remove] POST /remove_reaction');
+      const resp = await fetch(getApiUrl('/remove_reaction'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+        },
+        body: JSON.stringify({ room: roomId, message_id: messageId, username: user.username }),
+      });
+      const json = await resp.json().catch(() => null);
+      console.log('[reactions][remove] server response', resp.status, json);
+    } catch (e) {
+      console.warn('Failed to remove reaction:', e);
+    }
   };
 
   const handleTypingIndicator = (data: any) => {
@@ -1218,6 +1295,29 @@ export default function ChatScreen() {
       return `ts:${parseTimestampSafe(m?.timestamp)}`;
     };
 
+    // Heuristic match: server-confirmed message likely equals a local echo
+    const isLikelySame = (a: Message, b: Message): boolean => {
+      try {
+        if (!a || !b) return false;
+        // Only dedupe for our own sent messages
+        if (!user?.username) return false;
+        if (a.sender !== user.username || b.sender !== user.username) return false;
+        const aText = (a.content || a.message || '').trim();
+        const bText = (b.content || b.message || '').trim();
+        if (!aText || aText !== bText) return false;
+        const aMs = parseTimestampSafe(a.timestamp);
+        const bMs = parseTimestampSafe(b.timestamp);
+        if (!isFinite(aMs) || !isFinite(bMs)) return false;
+        const delta = Math.abs(aMs - bMs);
+        // within 2 minutes is considered same
+        if (delta > 120000) return false;
+        // One should look like a local echo (client_id equals message_id or status 'sent')
+        const aLooksLocal = a.status !== 'delivered' || (a.client_id && a.client_id === a.message_id);
+        const bLooksLocal = b.status !== 'delivered' || (b.client_id && b.client_id === b.message_id);
+        return aLooksLocal !== bLooksLocal;
+      } catch { return false; }
+    };
+
     const choose = (existing: Message | undefined, next: Message): Message => {
       if (!existing) return next;
       const existingHasServerId = typeof existing.message_id === 'number' && existing.client_id !== existing.message_id;
@@ -1235,11 +1335,25 @@ export default function ChatScreen() {
     for (const m of prev) {
       byKey.set(makeKey(m), m);
     }
-    // Merge incoming, replacing when same client_id or message_id
+    // Merge incoming, replacing when same client_id or message_id; also collapse local echo using heuristic
     for (const m of incoming) {
       const key = makeKey(m);
       const picked = choose(byKey.get(key), m);
       byKey.set(key, picked);
+      // Record mapping between client and server ids when both exist
+      if (m.client_id && typeof m.message_id === 'number') {
+        try {
+          clientIdToServerIdRef.current.set(m.client_id, m.message_id);
+          serverIdToClientIdRef.current.set(m.message_id, m.client_id);
+        } catch {}
+      }
+      // Attempt to find and remove a matching local-echo from prev
+      for (const [k, existing] of byKey.entries()) {
+        if (k === key) continue;
+        if (isLikelySame(existing, m)) {
+          byKey.set(k, picked);
+        }
+      }
       // Also ensure we don't keep a duplicate under a different key when client_id and message_id both exist
       if (m.client_id && typeof m.message_id === 'number') {
         const altKey = `mid:${m.message_id}`;
@@ -1300,7 +1414,7 @@ export default function ChatScreen() {
       status: raw?.status,
       room: raw?.room,
       client_id: raw?.client_id && Number(raw.client_id),
-      reactions: raw?.reactions || {},
+      reactions: normalizeReactions(raw?.reactions),
       message_class: raw?.message_class,
     };
 
