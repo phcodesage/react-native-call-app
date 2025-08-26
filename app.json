@@ -50,6 +50,7 @@
       "expo-router",
       "expo-notifications",
       "expo-dev-client",
+      "./plugins/foreground-service-plugin",
       [
         "expo-splash-screen",
         {

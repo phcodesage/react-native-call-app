@@ -22,6 +22,8 @@ class CallOngoingNotification {
   private responseSub?: Notifications.Subscription;
   private appStateSub?: { remove: () => void };
   private presentedNotificationId: string | null = null;
+  private onEndCallRequest?: () => void;
+  private onReturnToCallRequest?: () => void;
 
   async init() {
     // Ensure a handler exists so notifications can show when foreground too (useful for testing)
@@ -63,11 +65,18 @@ class CallOngoingNotification {
     this.responseSub = Notifications.addNotificationResponseReceivedListener((response) => {
       const action = response.actionIdentifier;
       if (action === 'END_CALL') {
-        // Consumers should listen to this event if needed
-        // We simply end and dismiss here; higher level should also end the call.
+        // Bubble up to app to actually end the call
+        try { this.onEndCallRequest?.(); } catch {}
         this.end();
+      } else if (action === 'RETURN_TO_CALL') {
+        try { this.onReturnToCallRequest?.(); } catch {}
       }
     });
+  }
+
+  setHandlers(handlers: { onEndCall?: () => void; onReturnToCall?: () => void }) {
+    this.onEndCallRequest = handlers.onEndCall;
+    this.onReturnToCallRequest = handlers.onReturnToCall;
   }
 
   async start(callerInfo: CallerInfo | null, startedAtMs?: number) {

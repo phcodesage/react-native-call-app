@@ -20,6 +20,7 @@ import { GestureHandlerRootView, PanGestureHandler, State } from 'react-native-g
 import { MediaStream, RTCView } from 'react-native-webrtc';
 import * as Notifications from 'expo-notifications';
 import CallOngoingNotification from '../services/CallOngoingNotification';
+import AndroidForegroundCallService from '../services/AndroidForegroundCallService';
 
 // RTCView props interface for proper typing
 interface RTCViewProps {
@@ -125,19 +126,42 @@ export const CallScreen: React.FC<CallScreenProps> = ({
       try {
         await Notifications.requestPermissionsAsync();
         await CallOngoingNotification.init();
+        // Wire actions from notification to this screen's handlers
+        CallOngoingNotification.setHandlers({
+          onEndCall: () => {
+            try { onEndCall(); } catch {}
+          },
+        });
       } catch {}
     })();
     return () => {
       // Ensure dismissal when screen unmounts
       CallOngoingNotification.end();
+      // Stop Android foreground service when leaving screen
+      AndroidForegroundCallService.stop();
     };
   }, []);
 
   // Start/stop ongoing call indicator based on connection state
   useEffect(() => {
     if (isConnected) {
-      CallOngoingNotification.start({ name: recipientName });
+      if (Platform.OS === 'android') {
+        // On Android 14+ (API >= 34), use Expo snapshot fallback to avoid FGS type crash
+        const apiLevel = typeof Platform.Version === 'number' ? Platform.Version : parseInt(String(Platform.Version), 10);
+        if (apiLevel >= 34) {
+          CallOngoingNotification.start({ name: recipientName });
+        } else {
+          // Use Android foreground service for live-updating ongoing notification
+          AndroidForegroundCallService.start(recipientName);
+        }
+      } else {
+        // Non-Android: use Expo snapshot notification
+        CallOngoingNotification.start({ name: recipientName });
+      }
     } else {
+      if (Platform.OS === 'android') {
+        AndroidForegroundCallService.stop();
+      }
       CallOngoingNotification.end();
     }
     // Also dismiss when chat overlay is opened? Not necessary; only shows in background
