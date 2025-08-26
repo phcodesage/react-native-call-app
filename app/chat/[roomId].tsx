@@ -3171,6 +3171,8 @@ export default function ChatScreen() {
             onToggleVideo={handleToggleVideo}
             onSwitchCamera={handleSwitchCamera}
             roomId={roomId as string}
+            peerChatBgColor={chatBgColor}
+            onResetBgColor={resetBgColor}
             onSendMessage={sendInCallMessage}
             messages={callMessages as any}
             onOpenFilePicker={openQuickFilePicker}

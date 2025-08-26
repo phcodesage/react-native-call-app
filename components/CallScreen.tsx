@@ -21,6 +21,7 @@ import { MediaStream, RTCView } from 'react-native-webrtc';
 import * as Notifications from 'expo-notifications';
 import CallOngoingNotification from '../services/CallOngoingNotification';
 import AndroidForegroundCallService from '../services/AndroidForegroundCallService';
+import ChangeColorModal from './change-color/ChangeColorModal';
 
 // RTCView props interface for proper typing
 interface RTCViewProps {
@@ -50,6 +51,8 @@ interface CallScreenProps {
   callDuration: string;
   recipientName: string;
   roomId?: string;
+  // If parent has a chat color (e.g., set by remote peer), use it during call chat overlay
+  peerChatBgColor?: string | null;
   onEndCall: () => void;
   onToggleMute: () => void;
   onToggleVideo: () => void;
@@ -64,6 +67,7 @@ interface CallScreenProps {
   onOpenChangeColor?: () => void;
   onToggleTimestamps?: () => void;
   showTimestamps?: boolean;
+  onResetBgColor?: () => void;
 }
 
 export const CallScreen: React.FC<CallScreenProps> = ({
@@ -75,6 +79,7 @@ export const CallScreen: React.FC<CallScreenProps> = ({
   callDuration,
   recipientName,
   roomId,
+  peerChatBgColor,
   onEndCall,
   onToggleMute,
   onToggleVideo,
@@ -88,6 +93,7 @@ export const CallScreen: React.FC<CallScreenProps> = ({
   onOpenChangeColor,
   onToggleTimestamps,
   showTimestamps,
+  onResetBgColor,
 }) => {
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
@@ -98,6 +104,9 @@ export const CallScreen: React.FC<CallScreenProps> = ({
   const [localVideoPosition] = useState(new Animated.ValueXY({ x: width - 140, y: 80 }));
   const [chatAnim] = useState(new Animated.Value(0));
   const [unreadCount, setUnreadCount] = useState(0);
+  // Call-only chat color state
+  const [showCallColorPicker, setShowCallColorPicker] = useState(false);
+  const [callChatBgColor, setCallChatBgColor] = useState<string | null>(null);
   const controlsTimeoutRef = useRef<NodeJS.Timeout | undefined>(undefined);
   const flatListRef = useRef<FlatList>(null);
   const lastSeenCountRef = useRef(0);
@@ -382,6 +391,8 @@ export const CallScreen: React.FC<CallScreenProps> = ({
                 }),
               },
             ],
+            // Apply call-only chat background color if selected
+            backgroundColor: callChatBgColor || peerChatBgColor || styles.chatOverlay.backgroundColor,
           },
         ]}
       >
@@ -449,8 +460,8 @@ export const CallScreen: React.FC<CallScreenProps> = ({
         </KeyboardAvoidingView>
 
         {/* Chat footer actions (below input) */}
-        {onToggleTimestamps && (
-          <View style={styles.chatFooter}>
+        <View style={styles.chatFooter}>
+          {onToggleTimestamps && (
             <TouchableOpacity
               style={[styles.chatFooterButton, { backgroundColor: '#8b5cf6' }]}
               onPress={onToggleTimestamps}
@@ -460,8 +471,27 @@ export const CallScreen: React.FC<CallScreenProps> = ({
                 {showTimestamps ? 'Hide Timestamps' : 'Show Timestamps'}
               </Text>
             </TouchableOpacity>
-          </View>
-        )}
+          )}
+          {/* Move Change Color here */}
+          <TouchableOpacity
+            style={[styles.chatFooterButton, { backgroundColor: '#6366f1' }]}
+            onPress={() => setShowCallColorPicker(true)}
+          >
+            <Ionicons name="color-palette" size={16} color="#ffffff" />
+            <Text style={styles.chatFooterButtonText}>Change Color</Text>
+          </TouchableOpacity>
+          {/* Reset local call chat color override */}
+          <TouchableOpacity
+            style={[styles.chatFooterButton, { backgroundColor: '#6b7280' }]}
+            onPress={() => {
+              try { onResetBgColor && onResetBgColor(); } catch {}
+              setCallChatBgColor(null);
+            }}
+          >
+            <Ionicons name="refresh" size={16} color="#ffffff" />
+            <Text style={styles.chatFooterButtonText}>Reset BG</Text>
+          </TouchableOpacity>
+        </View>
       </Animated.View>
 
       {/* Call Info Header */}
@@ -570,15 +600,7 @@ export const CallScreen: React.FC<CallScreenProps> = ({
                 <Text style={styles.actionButtonText}>Ring Doorbell</Text>
               </TouchableOpacity>
             )}
-            {onOpenChangeColor && (
-              <TouchableOpacity
-                style={[styles.actionButton, { backgroundColor: '#6366f1' }]}
-                onPress={onOpenChangeColor}
-              >
-                <Ionicons name="color-palette" size={16} color="#ffffff" />
-                <Text style={styles.actionButtonText}>Change Color</Text>
-              </TouchableOpacity>
-            )}
+            {/* Change Color moved to chat footer */}
           </View>
 
           {/* End Call Button */}
@@ -591,6 +613,21 @@ export const CallScreen: React.FC<CallScreenProps> = ({
           </TouchableOpacity>
         </View>
       )}
+      {/* Call-only Change Color Modal */}
+      <ChangeColorModal
+        visible={showCallColorPicker}
+        isDark={isDark}
+        initialColor={callChatBgColor || undefined}
+        onClose={() => setShowCallColorPicker(false)}
+        onApply={(color) => {
+          setCallChatBgColor(color ?? null);
+          setShowCallColorPicker(false);
+        }}
+        onReset={() => {
+          setCallChatBgColor(null);
+          setShowCallColorPicker(false);
+        }}
+      />
     </SafeAreaView>
   );
 };
@@ -963,6 +1000,10 @@ const styles = StyleSheet.create({
   chatFooter: {
     paddingHorizontal: 16,
     paddingBottom: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexWrap: 'wrap',
   },
   chatFooterButton: {
     alignSelf: 'flex-start',
