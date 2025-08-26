@@ -18,6 +18,8 @@ import {
 } from 'react-native';
 import { GestureHandlerRootView, PanGestureHandler, State } from 'react-native-gesture-handler';
 import { MediaStream, RTCView } from 'react-native-webrtc';
+import * as Notifications from 'expo-notifications';
+import CallOngoingNotification from '../services/CallOngoingNotification';
 
 // RTCView props interface for proper typing
 interface RTCViewProps {
@@ -84,6 +86,9 @@ export const CallScreen: React.FC<CallScreenProps> = ({
   const [localVideoPosition] = useState(new Animated.ValueXY({ x: width - 140, y: 80 }));
   const [chatAnim] = useState(new Animated.Value(0));
   const [unreadCount, setUnreadCount] = useState(0);
+  // Live message toasts when chat is hidden
+  const [liveToasts, setLiveToasts] = useState<Array<{ key: string; text: string; sender: string; isOwn: boolean }>>([]);
+  const toastTimersRef = useRef<Map<string, NodeJS.Timeout>>(new Map());
   const controlsTimeoutRef = useRef<NodeJS.Timeout | undefined>(undefined);
   const flatListRef = useRef<FlatList>(null);
   const lastSeenCountRef = useRef(0);
@@ -114,6 +119,30 @@ export const CallScreen: React.FC<CallScreenProps> = ({
     };
   }, []);
 
+  // Init notifications and request permissions once
+  useEffect(() => {
+    (async () => {
+      try {
+        await Notifications.requestPermissionsAsync();
+        await CallOngoingNotification.init();
+      } catch {}
+    })();
+    return () => {
+      // Ensure dismissal when screen unmounts
+      CallOngoingNotification.end();
+    };
+  }, []);
+
+  // Start/stop ongoing call indicator based on connection state
+  useEffect(() => {
+    if (isConnected) {
+      CallOngoingNotification.start({ name: recipientName });
+    } else {
+      CallOngoingNotification.end();
+    }
+    // Also dismiss when chat overlay is opened? Not necessary; only shows in background
+  }, [isConnected, recipientName]);
+
   // Animate chat panel visibility and manage unread counter
   useEffect(() => {
     if (chatVisible) {
@@ -131,6 +160,35 @@ export const CallScreen: React.FC<CallScreenProps> = ({
     if (!chatVisible && messages.length > lastSeenCountRef.current) {
       setUnreadCount(messages.length - lastSeenCountRef.current);
     }
+  }, [messages, chatVisible]);
+
+  // Push a brief toast for the latest incoming message when chat is hidden
+  useEffect(() => {
+    if (!messages?.length) return;
+    const last = messages[messages.length - 1];
+    if (!last) return;
+    if (chatVisible) return;
+    // Create a unique key per message id
+    const key = String((last as any).id ?? `${Date.now()}`);
+    // Avoid duplicates
+    if (liveToasts.find(t => t.key === key)) return;
+    const toast = { key, text: last.text, sender: last.senderName, isOwn: last.isOwn };
+    setLiveToasts(prev => {
+      // Prevent duplicates with the same text (e.g., multiple 'Call ended')
+      if (prev.some(t => (t.text || '') === (toast.text || ''))) return prev;
+      const next = [...prev, toast];
+      // keep last 3
+      return next.slice(-3);
+    });
+    // Auto-remove after 5s
+    const timer = setTimeout(() => {
+      setLiveToasts(prev => prev.filter(t => t.key !== key));
+      const m = toastTimersRef.current; if (m.has(key)) { m.delete(key); }
+    }, 5000);
+    toastTimersRef.current.set(key, timer as any);
+    return () => {
+      const m = toastTimersRef.current; const t = m.get(key); if (t) { clearTimeout(t); m.delete(key); }
+    };
   }, [messages]);
 
   const openChat = () => setChatVisible(true);
@@ -153,7 +211,7 @@ export const CallScreen: React.FC<CallScreenProps> = ({
       'Are you sure you want to end this call?',
       [
         { text: 'Cancel', style: 'cancel' },
-        { text: 'End Call', style: 'destructive', onPress: onEndCall },
+        { text: 'End Call', style: 'destructive', onPress: () => { CallOngoingNotification.end(); onEndCall(); } },
       ]
     );
   };
@@ -255,7 +313,7 @@ export const CallScreen: React.FC<CallScreenProps> = ({
           >
             <TouchableOpacity
               onPress={() => setIsLocalVideoLarge(!isLocalVideoLarge)}
-              style={{ flex: 1 }}
+              style={styles.localVideoTouchable}
             >
               {React.createElement(RTCView as any, {
                 streamURL: localStream.toURL(),
@@ -269,33 +327,47 @@ export const CallScreen: React.FC<CallScreenProps> = ({
         </PanGestureHandler>
       )}
 
-      {/* Full-screen chat overlay covers everything; no separate backdrop needed */}
+      {/* Floating live messages (when chat hidden) */}
+      {!chatVisible && liveToasts.length > 0 && (
+        <View style={styles.liveToastContainer}>
+          {liveToasts.map(t => (
+            <View key={t.key} style={styles.liveToast}>
+              <Text style={styles.liveToastSender} numberOfLines={1}>
+                {t.isOwn ? 'You' : (t.sender || 'Unknown')}
+              </Text>
+              <Text style={styles.liveToastText} numberOfLines={2}>
+                {t.text || ''}
+              </Text>
+            </View>
+          ))}
+        </View>
+      )}
     </GestureHandlerRootView>
   );
 
   const renderAudioCall = () => (
     <TouchableOpacity
-      style={styles.audioContainer as any}
+      style={styles.audioContainer}
       onPress={showControls}
       activeOpacity={1}
     >
-      <View style={styles.audioContent as any}>
-        <View style={styles.avatarContainer as any}>
+      <View style={styles.audioContent}>
+        <View style={styles.avatarContainer}>
           <View style={styles.avatarLarge}>
             <Text style={styles.avatarTextLarge}>
               {recipientName.charAt(0).toUpperCase()}
             </Text>
           </View>
           {isConnected && (
-            <View style={styles.audioIndicator as any}>
-              <View style={[styles.audioWave as any, styles.audioWave1 as any]} />
-              <View style={[styles.audioWave as any, styles.audioWave2 as any]} />
-              <View style={[styles.audioWave as any, styles.audioWave3 as any]} />
+            <View style={styles.audioIndicator}>
+              <View style={styles.audioWave1} />
+              <View style={styles.audioWave2} />
+              <View style={styles.audioWave3} />
             </View>
           )}
         </View>
-        <Text style={styles.recipientName as any}>{recipientName}</Text>
-        <Text style={styles.callStatus as any}>
+        <Text style={styles.recipientName}>{recipientName}</Text>
+        <Text style={styles.callStatus}>
           {isConnected ? 'Connected' : 'Connecting...'}
         </Text>
       </View>
@@ -303,14 +375,11 @@ export const CallScreen: React.FC<CallScreenProps> = ({
   );
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: '#000' }]}>
-      <StatusBar barStyle="light-content" backgroundColor="#000" />
-      
+    <SafeAreaView style={styles.container}>
       {hasVideo ? renderVideoCall() : renderAudioCall()}
 
-      {/* Chat Overlay (animated, Skype-like) - shown over both audio and video UIs */}
+      {/* Chat Overlay */}
       <Animated.View
-        pointerEvents={chatVisible ? 'auto' : 'none'}
         style={[
           styles.chatOverlay,
           {
@@ -347,7 +416,7 @@ export const CallScreen: React.FC<CallScreenProps> = ({
         >
           {onOpenFilePicker && (
             <TouchableOpacity
-              style={styles.attachButton as any}
+              style={styles.attachButton}
               onPress={onOpenFilePicker}
               accessibilityLabel="Attach file"
               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
@@ -391,10 +460,10 @@ export const CallScreen: React.FC<CallScreenProps> = ({
 
       {/* Call Info Header */}
       {controlsVisible && (
-        <View style={styles.header as any}>
-          <View style={styles.callInfo as any}>
-            <Text style={styles.recipientNameHeader as any}>{recipientName}</Text>
-            <Text style={styles.callDuration as any}>{callDuration}</Text>
+        <View style={styles.header}>
+          <View style={styles.callInfo}>
+            <Text style={styles.recipientNameHeader}>{recipientName}</Text>
+            <Text style={styles.callDuration}>{callDuration}</Text>
           </View>
 
         </View>
@@ -402,16 +471,16 @@ export const CallScreen: React.FC<CallScreenProps> = ({
 
       {/* Call Controls */}
       {controlsVisible && (
-        <View style={styles.controls as any}>
-          <View style={styles.controlRow as any}>
+        <View style={styles.controls}>
+          <View style={styles.controlRow}>
             {/* Chat Button - always available when onSendMessage exists */}
             {onSendMessage && (
               <TouchableOpacity
-                style={[styles.textButton as any, { width: btnWidth }, chatVisible && (styles.textButtonActive as any)]}
+                style={[styles.textButton, { width: btnWidth }, chatVisible && styles.textButtonActive]}
                 onPress={toggleChat}
                 hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               >
-                <Text style={styles.textButtonLabel as any}>{chatVisible ? 'Hide Chat' : 'Chat'}</Text>
+                <Text style={styles.textButtonLabel}>{chatVisible ? 'Hide Chat' : 'Chat'}</Text>
                 {!chatVisible && unreadCount > 0 && (
                   <View style={styles.chatBadge}>
                     <Text style={styles.chatBadgeText}>{unreadCount}</Text>
@@ -422,64 +491,64 @@ export const CallScreen: React.FC<CallScreenProps> = ({
 
             {/* Audio status/toggle */}
             <TouchableOpacity
-              style={[styles.textButton as any, { width: btnWidth }]}
+              style={[styles.textButton, { width: btnWidth }]}
               onPress={onToggleMute}
               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             >
-              <Text style={styles.textButtonLabel as any}>Audio is: {isAudioMuted ? 'off' : 'on'}</Text>
+              <Text style={styles.textButtonLabel}>Audio is: {isAudioMuted ? 'off' : 'on'}</Text>
             </TouchableOpacity>
 
             {/* Video status/toggle (only for video-capable calls) */}
             {hasVideo && (
               <TouchableOpacity
-                style={[styles.textButton as any, { width: btnWidth }]}
+                style={[styles.textButton, { width: btnWidth }]}
                 onPress={onToggleVideo}
                 hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               >
-                <Text style={styles.textButtonLabel as any}>Video is: {isVideoMuted ? 'off' : 'on'}</Text>
+                <Text style={styles.textButtonLabel}>Video is: {isVideoMuted ? 'off' : 'on'}</Text>
               </TouchableOpacity>
             )}
 
             {/* Switch Camera (only when video available and not muted) */}
             {hasVideo && !isVideoMuted && (
               <TouchableOpacity
-                style={[styles.textButton as any, { width: btnWidth }]}
+                style={[styles.textButton, { width: btnWidth }]}
                 onPress={onSwitchCamera}
                 hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               >
-                <Text style={styles.textButtonLabel as any}>Switch Camera</Text>
+                <Text style={styles.textButtonLabel}>Switch Camera</Text>
               </TouchableOpacity>
             )}
 
             {/* Speaker toggle (audio-only) */}
             {!hasVideo && onToggleSpeaker && (
               <TouchableOpacity
-                style={[styles.textButton as any, { width: btnWidth }]}
+                style={[styles.textButton, { width: btnWidth }]}
                 onPress={onToggleSpeaker}
                 hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               >
-                <Text style={styles.textButtonLabel as any}>Speaker</Text>
+                <Text style={styles.textButtonLabel}>Speaker</Text>
               </TouchableOpacity>
             )}
             {/* Send File (if file picker available) */}
             {onOpenFilePicker && (
               <TouchableOpacity
-                style={[styles.textButton as any, { width: btnWidth }]}
+                style={[styles.textButton, { width: btnWidth }]}
                 onPress={onOpenFilePicker}
                 hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               >
-                <Text style={styles.textButtonLabel as any}>Send File</Text>
+                <Text style={styles.textButtonLabel}>Send File</Text>
               </TouchableOpacity>
             )}
           </View>
 
           {/* End Call Button */}
           <TouchableOpacity
-            style={styles.endCallTextButton as any}
+            style={styles.endCallTextButton}
             onPress={handleEndCall}
             hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
           >
-            <Text style={styles.endCallText as any}>End Call</Text>
+            <Text style={styles.endCallText}>End Call</Text>
           </TouchableOpacity>
         </View>
       )}
@@ -533,6 +602,9 @@ const styles = StyleSheet.create({
     bottom: 140,
     width: 'auto',
     height: 'auto',
+  },
+  localVideoTouchable: {
+    flex: 1,
   },
   localVideo: {
     flex: 1,
@@ -734,7 +806,6 @@ const styles = StyleSheet.create({
     zIndex: 2000,
     elevation: 2000,
   },
-  // Removed chatBackdrop since chatOverlay is full-screen
   chatHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -828,5 +899,30 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     fontSize: 12,
     fontWeight: '600',
+  },
+  liveToastContainer: {
+    position: 'absolute',
+    left: 12,
+    right: 12,
+    bottom: 96,
+    gap: 8,
+    zIndex: 1500,
+    elevation: 1500,
+  },
+  liveToast: {
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+  },
+  liveToastSender: {
+    color: '#a3e635',
+    fontSize: 12,
+    fontWeight: '700',
+    marginBottom: 2,
+  },
+  liveToastText: {
+    color: '#ffffff',
+    fontSize: 13,
   },
 });
