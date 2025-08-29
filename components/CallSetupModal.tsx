@@ -1,5 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import { Platform } from 'react-native';
 import {
     ActivityIndicator,
     Alert,
@@ -74,6 +75,11 @@ export const CallSetupModal: React.FC<CallSetupModalProps> = ({
   const [currentFacingMode, setCurrentFacingMode] = useState<'user' | 'environment'>('user');
   const [callStartAnimation] = useState(new Animated.Value(0));
   const [showCallStartOverlay, setShowCallStartOverlay] = useState(false);
+  // Do not start camera automatically; toggle via Start Camera button
+  const [cameraStarted, setCameraStarted] = useState(false);
+  // Discovered mapping for which deviceId is front/back
+  const [frontDeviceId, setFrontDeviceId] = useState<string | null>(null);
+  const [backDeviceId, setBackDeviceId] = useState<string | null>(null);
 
   // Initialize devices and preview when modal opens
   useEffect(() => {
@@ -82,6 +88,7 @@ export const CallSetupModal: React.FC<CallSetupModalProps> = ({
       setIsStartingCall(false);
       setShowCallStartOverlay(false);
       callStartAnimation.setValue(0);
+      setCameraStarted(false);
       initializeDevicesAndPreview();
     } else {
       cleanupPreview();
@@ -94,6 +101,7 @@ export const CallSetupModal: React.FC<CallSetupModalProps> = ({
       setIsLoading(true);
       
       // Request permissions first with better error handling
+      // IMPORTANT: Start with audio-only; do not open camera until user taps Start Camera
       const constraints = {
         audio: {
           channelCount: 2,
@@ -102,12 +110,7 @@ export const CallSetupModal: React.FC<CallSetupModalProps> = ({
           noiseSuppression: true,
           autoGainControl: true,
         },
-        video: callType === 'video' ? {
-          width: { ideal: 1280, min: 640 },
-          height: { ideal: 720, min: 480 },
-          frameRate: { ideal: 30, min: 15 },
-          facingMode: currentFacingMode, // Use current facing mode
-        } : false,
+        video: false as const,
       };
       
       console.log('Requesting media with constraints:', constraints);
@@ -148,26 +151,7 @@ export const CallSetupModal: React.FC<CallSetupModalProps> = ({
         setSelectedAudioDevice(preferredAudioDevice);
       }
       
-      if (videoTrack && callType === 'video') {
-        const videoSettings = videoTrack.getSettings() as any;
-        const currentVideoDeviceId = videoSettings.deviceId;
-        
-        // Find the actual device being used
-        const currentVideoDevice = videoInputs.find(device => device.deviceId === currentVideoDeviceId);
-        const preferredVideoDevice = currentVideoDevice?.deviceId || savedPreferences.videoDeviceId || (videoInputs.length > 0 ? videoInputs[0].deviceId : '');
-        setSelectedVideoDevice(preferredVideoDevice);
-        
-        console.log('Initial video device setup:', {
-          currentVideoDeviceId,
-          currentVideoDevice: currentVideoDevice ? { id: currentVideoDevice.deviceId, label: currentVideoDevice.label } : null,
-          preferredVideoDevice
-        });
-        
-        // Update facing mode based on actual device
-        if (currentVideoDevice) {
-          updateFacingModeFromDevice(currentVideoDevice);
-        }
-      }
+      // Do not set video device yet; camera hasn't started. We'll set after Start Camera.
       
       if (audioOutputs.length > 0) {
         const preferredSpeakerDevice = savedPreferences.speakerDeviceId || audioOutputs[0].deviceId;
@@ -239,34 +223,38 @@ export const CallSetupModal: React.FC<CallSetupModalProps> = ({
   const formatDeviceLabel = (device: MediaDeviceInfo, type: string, index: number): string => {
     // Special handling for camera devices
     if (type === 'Camera') {
+      // Prefer discovered mapping if available
+      if (frontDeviceId && device.deviceId === frontDeviceId) {
+        return `📷 Front Camera`;
+      }
+      if (backDeviceId && device.deviceId === backDeviceId) {
+        return `📷 Back Camera`;
+      }
       if (device.label) {
         // Check for front/back camera indicators
         if (device.label.toLowerCase().includes('front') ||
             device.label.toLowerCase().includes('user') ||
             device.label.toLowerCase().includes('facing front')) {
-          return `📷 Back Camera`;
+          return `📷 Front Camera`;
         }
         if (device.label.toLowerCase().includes('back') ||
             device.label.toLowerCase().includes('environment') ||
             device.label.toLowerCase().includes('rear') ||
             device.label.toLowerCase().includes('facing back')) {
-          return `📷 Front Camera`;
-        }
-        // For devices that don't specify, use index
-        if (index === 1) {
           return `📷 Back Camera`;
-        } else if (index === 2) {
-          return `📷 Front Camera`;
         }
         // Fallback to original label with camera emoji
         return `📷 ${device.label}`;
       }
-      // No label available, use index-based naming
-      if (index === 1) {
+      // No label or ambiguous label: map by common numeric IDs first
+      const id = (device.deviceId || '').toLowerCase();
+      if (id === '1' || id.endsWith(':1')) {
         return `📷 Front Camera`;
-      } else if (index === 2) {
+      }
+      if (id === '0' || id.endsWith(':0')) {
         return `📷 Back Camera`;
       }
+      // Last resort: index-based generic label
       return `📷 Camera ${index}`;
     }
     
@@ -377,6 +365,33 @@ export const CallSetupModal: React.FC<CallSetupModalProps> = ({
     }
   };
 
+  // Discover which deviceId maps to front/back cameras by probing facingMode
+  const discoverCameraMapping = async () => {
+    try {
+      // Probe front (user)
+      const userProbe = await mediaDevices.getUserMedia({ audio: false as const, video: { facingMode: 'user' } });
+      const userTrack = userProbe.getVideoTracks()[0];
+      const userId = (userTrack?.getSettings() as any)?.deviceId as string | undefined;
+      userProbe.getTracks().forEach(t => t.stop());
+
+      // Probe back (environment)
+      const envProbe = await mediaDevices.getUserMedia({ audio: false as const, video: { facingMode: 'environment' } });
+      const envTrack = envProbe.getVideoTracks()[0];
+      const envId = (envTrack?.getSettings() as any)?.deviceId as string | undefined;
+      envProbe.getTracks().forEach(t => t.stop());
+
+      if (userId && envId && userId !== envId) {
+        setFrontDeviceId(userId);
+        setBackDeviceId(envId);
+        console.log('Discovered camera mapping', { front: userId, back: envId });
+      } else {
+        console.log('Camera mapping probe inconclusive');
+      }
+    } catch (e) {
+      console.warn('discoverCameraMapping failed:', e);
+    }
+  };
+
   const handleDeviceChange = async (deviceType: 'audio' | 'video', deviceId: string) => {
     try {
       console.log(`Switching ${deviceType} device to:`, deviceId);
@@ -418,7 +433,7 @@ export const CallSetupModal: React.FC<CallSetupModalProps> = ({
               autoGainControl: true,
             };
 
-        const videoConstraints = callType === 'video' ? 
+        const videoConstraints = (callType === 'video' && cameraStarted) ? 
           (deviceType === 'video' ? {
               deviceId: { exact: deviceId },
               width: { ideal: 1280, min: 640 },
@@ -448,11 +463,18 @@ export const CallSetupModal: React.FC<CallSetupModalProps> = ({
           
           // For numeric device IDs, determine facing mode from actual stream capabilities
           if (deviceId === '0' || deviceId === '1') {
-            // Test which camera is which by trying facingMode constraints
-            // We'll reverse the common assumption since it seems inverted on this device
-            const isFrontCamera = deviceId === '1'; // Reversed: '1' is front, '0' is back
-            setCurrentFacingMode(isFrontCamera ? 'user' : 'environment');
-            console.log(`Set facing mode based on device ID ${deviceId}: ${isFrontCamera ? 'user (front)' : 'environment (back)'}`);
+            // Prefer discovered mapping if available
+            if (frontDeviceId && deviceId === frontDeviceId) {
+              setCurrentFacingMode('user');
+              console.log(`Set facing mode via discovered mapping for device ${deviceId}: user (front)`);
+            } else if (backDeviceId && deviceId === backDeviceId) {
+              setCurrentFacingMode('environment');
+              console.log(`Set facing mode via discovered mapping for device ${deviceId}: environment (back)`);
+            } else {
+              const isFrontCamera = deviceId === '1';
+              setCurrentFacingMode(isFrontCamera ? 'user' : 'environment');
+              console.log(`Set facing mode based on numeric assumption for device ${deviceId}: ${isFrontCamera ? 'user (front)' : 'environment (back)'}`);
+            }
           }
           
           // Ensure the selected device matches what's actually being used
@@ -491,114 +513,41 @@ export const CallSetupModal: React.FC<CallSetupModalProps> = ({
   const handleCameraSwitch = async () => {
     try {
       if (!previewStream || callType !== 'video') return;
-
-      console.log('Switching camera from', currentFacingMode, 'to', currentFacingMode === 'user' ? 'environment' : 'user');
-      
-      // Find the opposite camera
-      const currentFacing = currentFacingMode;
-      const targetFacing = currentFacing === 'user' ? 'environment' : 'user';
-      
-      // Try to find a specific device for the target facing mode
-      let targetDevice = videoDevices.find(device => {
-        const label = device.label.toLowerCase();
-        const deviceId = device.deviceId.toLowerCase();
-        
-        if (targetFacing === 'environment') {
-          return label.includes('back') || label.includes('environment') || 
-                 label.includes('rear') || deviceId.includes('back') ||
-                 deviceId.includes('environment') || deviceId.includes('rear');
-        } else {
-          return label.includes('front') || label.includes('user') || 
-                 deviceId.includes('front') || deviceId.includes('user') ||
-                 label.includes('selfie');
-        }
-      });
-      
-      // For numeric device IDs, use simple mapping
-      if (!targetDevice && videoDevices.length >= 2) {
-        const currentDeviceId = selectedVideoDevice;
-        // Since we know '1' is front and '0' is back on this device
-        if (targetFacing === 'environment') {
-          // Want back camera (device '0')
-          targetDevice = videoDevices.find(d => d.deviceId === '0');
-        } else {
-          // Want front camera (device '1')
-          targetDevice = videoDevices.find(d => d.deviceId === '1');
-        }
-        console.log(`Switching to ${targetFacing} camera: device ${targetDevice?.deviceId}`);
+      const videoTrack = previewStream.getVideoTracks()[0] as any;
+      if (Platform.OS === 'android' && videoTrack && (videoTrack._switchCamera || videoTrack.switchCamera)) {
+        // Use native switch for stability on Android
+        console.log('Switching camera via native track API on Android');
+        const fn = videoTrack._switchCamera || videoTrack.switchCamera;
+        fn.call(videoTrack);
+        // Toggle facing mode hint for UI
+        setCurrentFacingMode(prev => (prev === 'user' ? 'environment' : 'user'));
+        return;
       }
 
-      // Clean up current stream
-      previewStream.getTracks().forEach(track => track.stop());
-      
-      // Create new stream with switched camera
-      const constraints = {
-        audio: {
-          deviceId: selectedAudioDevice ? { exact: selectedAudioDevice } : undefined,
-          channelCount: 2,
-          sampleRate: 48000,
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-        video: targetDevice ? {
-          deviceId: { exact: targetDevice.deviceId },
-          width: { ideal: 1280, min: 640 },
-          height: { ideal: 720, min: 480 },
-          frameRate: { ideal: 30, min: 15 },
-        } : {
+      console.log('Fallback camera switch via getUserMedia');
+      const targetFacing = currentFacingMode === 'user' ? 'environment' : 'user';
+      // Stop only the video track before switching
+      previewStream.getVideoTracks().forEach(track => track.stop());
+      const newVideoStream = await mediaDevices.getUserMedia({
+        audio: false,
+        video: {
           width: { ideal: 1280, min: 640 },
           height: { ideal: 720, min: 480 },
           frameRate: { ideal: 30, min: 15 },
           facingMode: targetFacing,
         },
-      };
+      } as any);
 
-      console.log('Camera switch constraints:', constraints);
-      const newStream = await mediaDevices.getUserMedia(constraints);
-      console.log('New camera stream obtained');
-      
-      setPreviewStream(newStream);
-
-      // Update selected video device and facing mode to match new stream
-      const videoTrack = newStream.getVideoTracks()[0];
-      if (videoTrack) {
-        const videoSettings = videoTrack.getSettings() as any;
-        if (videoSettings.deviceId) {
-          const actualDevice = videoDevices.find(d => d.deviceId === videoSettings.deviceId);
-          if (actualDevice) {
-            setSelectedVideoDevice(actualDevice.deviceId);
-            // For numeric IDs, set facing mode based on device ID
-            if (actualDevice.deviceId === '0' || actualDevice.deviceId === '1') {
-              const isFrontCamera = actualDevice.deviceId === '1'; // Reversed: '1' is front, '0' is back
-              setCurrentFacingMode(isFrontCamera ? 'user' : 'environment');
-              console.log(`Camera switched to device ${actualDevice.deviceId}: ${isFrontCamera ? 'user (front)' : 'environment (back)'}`);
-            } else {
-              updateFacingModeFromDevice(actualDevice);
-            }
-          } else {
-            setSelectedVideoDevice(videoSettings.deviceId);
-            setCurrentFacingMode(targetFacing);
-          }
-        }
-      }
-      
+      // Replace only video tracks in previewStream to keep audio stable
+      const audioTracks = previewStream.getAudioTracks();
+      const merged = new MediaStream();
+      audioTracks.forEach(t => merged.addTrack(t));
+      newVideoStream.getVideoTracks().forEach(t => merged.addTrack(t));
+      setPreviewStream(merged);
+      setCurrentFacingMode(targetFacing);
     } catch (error: any) {
       console.error('Error switching camera:', error);
-      
-      let errorMessage = 'Failed to switch camera. Please try again.';
-      if (error.name === 'NotFoundError') {
-        errorMessage = 'The requested camera is not available on this device.';
-      } else if (error.name === 'NotAllowedError') {
-        errorMessage = 'Camera access denied. Please check your permissions.';
-      } else if (error.name === 'NotReadableError') {
-        errorMessage = 'Camera is busy or being used by another application.';
-      }
-      
-      Alert.alert('Camera Switch Error', errorMessage);
-      
-      // Revert facing mode on error
-      setCurrentFacingMode(currentFacingMode);
+      Alert.alert('Camera Switch Error', 'Failed to switch camera. Please try again.');
     }
   };
 
@@ -622,7 +571,7 @@ export const CallSetupModal: React.FC<CallSetupModalProps> = ({
     
     const selectedDevices = {
       audioDeviceId: selectedAudioDevice,
-      videoDeviceId: callType === 'video' ? selectedVideoDevice : undefined,
+      videoDeviceId: (callType === 'video' && cameraStarted && !!selectedVideoDevice) ? selectedVideoDevice : undefined,
       speakerDeviceId: selectedSpeakerDevice,
     };
     
@@ -730,6 +679,60 @@ export const CallSetupModal: React.FC<CallSetupModalProps> = ({
     );
   };
 
+  // Start camera on demand
+  const startCamera = async () => {
+    try {
+      const constraints = {
+        audio: {
+          deviceId: selectedAudioDevice ? { exact: selectedAudioDevice } : undefined,
+          channelCount: 2,
+          sampleRate: 48000,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+        video: {
+          width: { ideal: 1280, min: 640 },
+          height: { ideal: 720, min: 480 },
+          frameRate: { ideal: 30, min: 15 },
+          facingMode: currentFacingMode,
+        },
+      } as const;
+
+      if (previewStream) {
+        previewStream.getTracks().forEach(t => t.stop());
+      }
+
+      const newStream = await mediaDevices.getUserMedia(constraints);
+      setPreviewStream(newStream);
+
+      if (Platform.OS !== 'android') {
+        const devices = await mediaDevices.enumerateDevices() as MediaDeviceInfo[];
+        const videoInputs = devices.filter((d: MediaDeviceInfo) => d.kind === 'videoinput');
+        const videoTrack = newStream.getVideoTracks()[0];
+        if (videoTrack) {
+          const videoSettings = videoTrack.getSettings() as any;
+          const currentVideoDeviceId = videoSettings.deviceId;
+          const currentVideoDevice = videoInputs.find(d => d.deviceId === currentVideoDeviceId);
+          const preferredVideoDevice = currentVideoDevice?.deviceId || (videoInputs.length > 0 ? videoInputs[0].deviceId : '');
+          setSelectedVideoDevice(preferredVideoDevice);
+          if (currentVideoDevice) updateFacingModeFromDevice(currentVideoDevice);
+        }
+      }
+
+      setCameraStarted(true);
+      startMicLevelMonitoring(newStream);
+      // Avoid extra probes on Android to prevent black screen due to multiple camera opens
+      if (Platform.OS !== 'android') {
+        // Discover mapping asynchronously (best-effort)
+        discoverCameraMapping();
+      }
+    } catch (e) {
+      console.error('Failed to start camera:', e);
+      Alert.alert('Camera', 'Unable to start camera. Check permissions and try again.');
+    }
+  };
+
   return (
     <Modal
       visible={visible}
@@ -776,7 +779,7 @@ export const CallSetupModal: React.FC<CallSetupModalProps> = ({
               {callType === 'video' && (
                 <View style={styles.previewContainer}>
                   <View style={styles.videoPreview}>
-                    {previewStream && previewStream.getVideoTracks().length > 0 ? (
+                    {cameraStarted && previewStream && previewStream.getVideoTracks().length > 0 ? (
                       <>
                         {React.createElement(RTCView as any, {
                           streamURL: previewStream.toURL(),
@@ -805,8 +808,12 @@ export const CallSetupModal: React.FC<CallSetupModalProps> = ({
                           color={isDark ? '#9ca3af' : '#6b7280'} 
                         />
                         <Text style={[styles.placeholderText, { color: isDark ? '#9ca3af' : '#6b7280' }]}>
-                          {previewStream ? 'No video signal' : 'Camera not available'}
+                          {'Camera is off'}
                         </Text>
+                        <TouchableOpacity style={styles.startCameraButton} onPress={startCamera}>
+                          <Ionicons name="videocam" size={18} color="#ffffff" />
+                          <Text style={styles.startCameraButtonText}>Start Camera</Text>
+                        </TouchableOpacity>
                       </View>
                     )}
                   </View>
@@ -839,21 +846,41 @@ export const CallSetupModal: React.FC<CallSetupModalProps> = ({
                 (deviceId) => handleDeviceChange('audio', deviceId),
                 'mic'
               )}
-
-              {callType === 'video' && renderDeviceSelector(
+              {callType === 'video' && !cameraStarted && (
+                <View style={styles.deviceSection}>
+                  <View style={styles.deviceHeader}>
+                    <Ionicons
+                      name="videocam"
+                      size={20}
+                      color={isDark ? '#9ca3af' : '#6b7280'}
+                    />
+                    <Text style={[styles.deviceTitle, { color: isDark ? '#f3f4f6' : '#1f2937' }]}>
+                      Camera
+                    </Text>
+                  </View>
+                  <View style={[styles.noDeviceContainer, { backgroundColor: isDark ? '#374151' : '#f3f4f6' }]}>
+                    <Text style={[styles.noDeviceText, { color: isDark ? '#9ca3af' : '#6b7280' }]}>
+                      Start camera to select a camera device
+                    </Text>
+                    <TouchableOpacity style={styles.startCameraButton} onPress={startCamera}>
+                      <Ionicons name="videocam" size={18} color="#ffffff" />
+                      <Text style={styles.startCameraButtonText}>Start Camera</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              )}
+              {callType === 'video' && cameraStarted && renderDeviceSelector(
                 'Camera',
                 videoDevices,
                 selectedVideoDevice,
                 (deviceId) => handleDeviceChange('video', deviceId),
-                'camera'
+                'videocam'
               )}
-
-              {/* Speaker/Audio Output Selector with Bluetooth support */}
-              {speakerDevices.length > 0 && renderDeviceSelector(
-                'Speaker / Audio Output',
+              {renderDeviceSelector(
+                'Speaker',
                 speakerDevices,
                 selectedSpeakerDevice,
-                setSelectedSpeakerDevice,
+                (deviceId) => setSelectedSpeakerDevice(deviceId),
                 'volume-high'
               )}
 
@@ -994,6 +1021,22 @@ const styles = StyleSheet.create({
     marginTop: 12,
     fontSize: 14,
     textAlign: 'center',
+  },
+  startCameraButton: {
+    marginTop: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#420796',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 20,
+  },
+  startCameraButtonText: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '600',
+    marginLeft: 6,
   },
   cameraSwitchButton: {
     position: 'absolute',
