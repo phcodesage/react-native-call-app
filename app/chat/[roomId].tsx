@@ -14,6 +14,7 @@ import { useColorScheme } from '@/hooks/useColorScheme';
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useRef, useState } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import {
   ActivityIndicator,
   Alert,
@@ -259,6 +260,16 @@ export default function ChatScreen() {
       return next;
     });
   };
+
+  // Persist last opened chat room id on focus to restore later
+  useFocusEffect(
+    React.useCallback(() => {
+      if (roomId) {
+        AsyncStorage.setItem('last_room_id', String(roomId)).catch(() => {});
+      }
+      return () => {};
+    }, [roomId])
+  );
 
   // Track mount to avoid setState after unmount (can happen when returning from camera)
   useEffect(() => {
