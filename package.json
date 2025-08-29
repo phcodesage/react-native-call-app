@@ -8,7 +8,15 @@
     "android": "expo run:android",
     "ios": "expo run:ios",
     "web": "expo start --web",
-    "lint": "expo lint"
+    "lint": "expo lint",
+    "android:release": "cd android && ./gradlew clean assembleRelease -x lint",
+    "android:release:fast": "cd android && ./gradlew assembleRelease -x lint",
+    "android:bundle": "cd android && ./gradlew clean bundleRelease -x lint",
+    "android:installRelease": "cd android && ./gradlew installRelease",
+    "android:open-apk": "xdg-open android/app/build/outputs/apk/release/app-release.apk || open android/app/build/outputs/apk/release/app-release.apk",
+    "android:codegen:debug": "cd android && ./gradlew :app:generateDebugCodegenSchemaFromJavaScript :app:generateDebugCodegenArtifactsFromSchema",
+    "android:codegen:release": "cd android && ./gradlew :app:generateReleaseCodegenSchemaFromJavaScript :app:generateReleaseCodegenArtifactsFromSchema",
+    "android:codegen": "npm run android:codegen:debug && npm run android:codegen:release"
   },
   "dependencies": {
     "@expo/vector-icons": "^14.1.0",

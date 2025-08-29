@@ -76,6 +76,7 @@ interface CallScreenProps {
   onToggleTimestamps?: () => void;
   showTimestamps?: boolean;
   onResetBgColor?: () => void;
+  onApplyBgColor?: (color: string | null) => void;
 }
 
 export const CallScreen: React.FC<CallScreenProps> = ({
@@ -102,6 +103,7 @@ export const CallScreen: React.FC<CallScreenProps> = ({
   onToggleTimestamps,
   showTimestamps,
   onResetBgColor,
+  onApplyBgColor,
 }) => {
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
@@ -664,7 +666,8 @@ export const CallScreen: React.FC<CallScreenProps> = ({
         initialColor={callChatBgColor || undefined}
         onClose={() => setShowCallColorPicker(false)}
         onApply={(color) => {
-          setCallChatBgColor(color ?? null);
+          // Do NOT change our local background; only emit to peer
+          try { onApplyBgColor && onApplyBgColor(color ?? null); } catch {}
           setShowCallColorPicker(false);
         }}
         onReset={() => {

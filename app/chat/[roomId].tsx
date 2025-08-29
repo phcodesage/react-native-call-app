@@ -652,6 +652,8 @@ export default function ChatScreen() {
     socketRef.current?.on('receive_color', (data: any) => {
       try {
         if (!data || !data.from || !data.color) return;
+        // Ignore our own echo so only the peer gets the bg change
+        if (user?.username && data.from === user.username) return;
         const ts = parseTimestampSafe(data?.timestamp);
         setChatBgColor(data.color);
         const msgText = `${data.from} changed your bg color`;
@@ -675,6 +677,8 @@ export default function ChatScreen() {
     socketRef.current?.on('receive_reset_bg_color', (data: any) => {
       try {
         if (!data || !data.from) return;
+        // Ignore our own echo so local bg does not reset due to our own action
+        if (user?.username && data.from === user.username) return;
         const ts = parseTimestampSafe(data?.timestamp);
         setChatBgColor(null);
         const msgText = `${data.from} resets its bg color`;
@@ -3180,6 +3184,7 @@ export default function ChatScreen() {
             roomId={roomId as string}
             peerChatBgColor={chatBgColor}
             onResetBgColor={resetBgColor}
+            onApplyBgColor={applySelectedColor}
             onSendMessage={sendInCallMessage}
             messages={callMessages as any}
             onOpenFilePicker={openQuickFilePicker}
