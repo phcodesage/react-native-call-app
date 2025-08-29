@@ -7,6 +7,7 @@ import {
     RTCPeerConnection,
     RTCSessionDescription,
 } from 'react-native-webrtc';
+import { Platform } from 'react-native';
 
 // Define RTCConfiguration interface for react-native-webrtc
 interface RTCConfiguration {
@@ -104,8 +105,12 @@ export class WebRTCService {
       }
 
       // Get user media with selected devices
+      // On Android, prefer facingMode over deviceId to avoid black preview issues
+      const wantVideo = callType === 'video';
+      // Always honor an explicitly provided deviceId (from setup modal) on all platforms
+      const useDeviceIdForVideo = !!finalDevices?.videoDeviceId;
       const constraints = {
-        audio: finalDevices?.audioDeviceId 
+        audio: finalDevices?.audioDeviceId
           ? { deviceId: { exact: finalDevices.audioDeviceId } }
           : {
               channelCount: 2,
@@ -114,16 +119,18 @@ export class WebRTCService {
               noiseSuppression: false,
               autoGainControl: false,
             },
-        video: callType === 'video' 
-          ? finalDevices?.videoDeviceId 
-            ? { deviceId: { exact: finalDevices.videoDeviceId } }
+        video: wantVideo
+          ? useDeviceIdForVideo
+            ? { deviceId: { exact: finalDevices!.videoDeviceId! } }
             : {
-                width: { ideal: 1280 },
-                height: { ideal: 720 },
-                frameRate: { ideal: 30 },
+                width: { ideal: 1280, min: 640 },
+                height: { ideal: 720, min: 480 },
+                frameRate: { ideal: 30, min: 15 },
+                // Prefer front camera by default when no selection provided
+                facingMode: 'user',
               }
           : false,
-      };
+      } as const;
 
       this.localStream = await mediaDevices.getUserMedia(constraints);
       

@@ -361,7 +361,8 @@ export const CallScreen: React.FC<CallScreenProps> = ({
           <Animated.View
             style={[
               styles.localVideoContainer,
-              {
+              // Only apply drag transform in small PiP mode
+              !isLocalVideoLarge && {
                 transform: [
                   { translateX: localVideoPosition.x },
                   { translateY: localVideoPosition.y },
@@ -727,12 +728,17 @@ const styles = StyleSheet.create({
     zIndex: 10,
   },
   localVideoLarge: {
-    top: 60,
-    left: 20,
-    right: 20,
-    bottom: 140,
-    width: 'auto',
-    height: 'auto',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    width: '100%',
+    height: '100%',
+    borderRadius: 0,
+    borderWidth: 0,
+    elevation: 0,
+    shadowColor: 'transparent',
+    shadowOpacity: 0,
   },
   localVideoTouchable: {
     flex: 1,
