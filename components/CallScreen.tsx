@@ -544,6 +544,7 @@ export const CallScreen: React.FC<CallScreenProps> = ({
       {controlsVisible && (
         <View style={styles.controls}>
           {/* Primary Controls (compact, icon buttons) */}
+          {isConnected ? (
           <View style={styles.controlGrid}>
             {onSendMessage && (
               <TouchableOpacity
@@ -614,8 +615,14 @@ export const CallScreen: React.FC<CallScreenProps> = ({
               </TouchableOpacity>
             )}
           </View>
+          ) : (
+            <View style={styles.connectingHintRow}>
+              <Text style={styles.connectingHintText}>Connecting…</Text>
+            </View>
+          )}
 
           {/* Quick Actions (compact) */}
+          {isConnected && (
           <View style={styles.actionGrid}>
             {/* Only show Camera/Send File on audio-only calls */}
             {!hasVideo && onOpenCamera && (
@@ -648,6 +655,7 @@ export const CallScreen: React.FC<CallScreenProps> = ({
             )}
             {/* Change Color moved to chat footer */}
           </View>
+          )}
 
           {/* End Call Button */}
           <TouchableOpacity
@@ -1081,6 +1089,19 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     fontSize: 12,
     fontWeight: '600',
+  },
+  connectingHintRow: {
+    width: '100%',
+    maxWidth: 520,
+    alignSelf: 'center',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 8,
+  },
+  connectingHintText: {
+    color: '#e5e7eb',
+    fontSize: 14,
+    opacity: 0.85,
   },
   liveToastContainer: {
     position: 'absolute',
