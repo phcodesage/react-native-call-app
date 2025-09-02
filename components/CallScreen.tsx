@@ -437,13 +437,13 @@ export const CallScreen: React.FC<CallScreenProps> = ({
                 }),
               },
             ],
-            // Apply call-only chat background color if selected
-            backgroundColor: callChatBgColor || peerChatBgColor || styles.chatOverlay.backgroundColor,
+            // Make overlay background solid
+            backgroundColor: '#000000',
           },
         ]}
       >
         <View style={styles.chatHeader}>
-          <Text style={styles.chatTitle}>Chat</Text>
+          <Text style={styles.chatTitle}>{recipientName}</Text>
           <TouchableOpacity onPress={closeChat} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
             <Ionicons name="close" size={24} color="#ffffff" />
           </TouchableOpacity>
@@ -974,9 +974,7 @@ const styles = StyleSheet.create({
     right: 0,
     width: '100%',
     height: '100%',
-    backgroundColor: 'rgba(0, 0, 0, 0.9)',
-    borderLeftWidth: 1,
-    borderLeftColor: 'rgba(255, 255, 255, 0.1)',
+    backgroundColor: '#000000',
     zIndex: 2000,
     elevation: 2000,
   },
@@ -985,7 +983,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     padding: 16,
-    paddingTop: 60,
+    paddingTop: 16,
     borderBottomWidth: 1,
     borderBottomColor: 'rgba(255, 255, 255, 0.1)',
   },
