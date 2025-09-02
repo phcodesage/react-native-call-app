@@ -188,18 +188,6 @@ export default function SignupScreen() {
           </View>
 
           {/* Logo/Brand */}
-          <View style={styles.brandContainer}>
-            <View style={[styles.logo, { backgroundColor: '#420796' }]}>
-              <Ionicons name="call" size={32} color="#ffffff" />
-            </View>
-            <Text style={[styles.brandText, { color: isDark ? '#ffffff' : '#1f2937' }]}>
-              Call App
-            </Text>
-            <Text style={[styles.subtitle, { color: isDark ? '#9ca3af' : '#6b7280' }]}>
-              Join the conversation
-            </Text>
-          </View>
-
           {/* Form */}
           <View style={styles.form}>
             {/* Username Input */}
@@ -421,11 +409,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: 16,
-  },
-  brandText: {
-    fontSize: 28,
-    fontWeight: '700',
-    marginBottom: 8,
   },
   subtitle: {
     fontSize: 16,
