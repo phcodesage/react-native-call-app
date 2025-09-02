@@ -788,17 +788,6 @@ export const CallSetupModal: React.FC<CallSetupModalProps> = ({
                           mirror: currentFacingMode === 'user', // Only mirror front camera
                           zOrder: 0,
                         })}
-                        {/* Camera Switch Button */}
-                        <TouchableOpacity
-                          style={styles.cameraSwitchButton}
-                          onPress={() => handleCameraSwitch()}
-                        >
-                          <Ionicons 
-                            name="camera-reverse" 
-                            size={24} 
-                            color="#ffffff" 
-                          />
-                        </TouchableOpacity>
                       </>
                     ) : (
                       <View style={[styles.previewPlaceholder, { backgroundColor: isDark ? '#374151' : '#f3f4f6' }]}>
@@ -820,32 +809,7 @@ export const CallSetupModal: React.FC<CallSetupModalProps> = ({
                 </View>
               )}
 
-              {/* Audio Level Indicator - Show for both audio and video calls */}
-              <View style={styles.audioLevelContainer}>
-                <Text style={[styles.previewLabel, { color: isDark ? '#9ca3af' : '#6b7280' }]}>
-                  Microphone Level
-                </Text>
-                <View style={styles.micLevelBar}>
-                  <View
-                    style={[
-                      styles.micLevelFill,
-                      { width: `${micLevel}%` }
-                    ]}
-                  />
-                </View>
-                <Text style={[styles.micLevelText, { color: isDark ? '#9ca3af' : '#6b7280' }]}>
-                  {micLevel > 70 ? 'High' : micLevel > 30 ? 'Good' : micLevel > 5 ? 'Low' : 'Silent'}
-                </Text>
-              </View>
-
-              {/* Device Selectors */}
-              {renderDeviceSelector(
-                'Microphone',
-                audioDevices,
-                selectedAudioDevice,
-                (deviceId) => handleDeviceChange('audio', deviceId),
-                'mic'
-              )}
+              {/* Camera selection moved below preview */}
               {callType === 'video' && !cameraStarted && (
                 <View style={styles.deviceSection}>
                   <View style={styles.deviceHeader}>
@@ -875,6 +839,33 @@ export const CallSetupModal: React.FC<CallSetupModalProps> = ({
                 selectedVideoDevice,
                 (deviceId) => handleDeviceChange('video', deviceId),
                 'videocam'
+              )}
+
+              {/* Audio Level Indicator - Show for both audio and video calls */}
+              <View style={styles.audioLevelContainer}>
+                <Text style={[styles.previewLabel, { color: isDark ? '#9ca3af' : '#6b7280' }]}>
+                  Microphone Level
+                </Text>
+                <View style={styles.micLevelBar}>
+                  <View
+                    style={[
+                      styles.micLevelFill,
+                      { width: `${micLevel}%` }
+                    ]}
+                  />
+                </View>
+                <Text style={[styles.micLevelText, { color: isDark ? '#9ca3af' : '#6b7280' }]}>
+                  {micLevel > 70 ? 'High' : micLevel > 30 ? 'Good' : micLevel > 5 ? 'Low' : 'Silent'}
+                </Text>
+              </View>
+
+              {/* Device Selectors */}
+              {renderDeviceSelector(
+                'Microphone',
+                audioDevices,
+                selectedAudioDevice,
+                (deviceId) => handleDeviceChange('audio', deviceId),
+                'mic'
               )}
               {renderDeviceSelector(
                 'Speaker',
@@ -1037,22 +1028,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
     marginLeft: 6,
-  },
-  cameraSwitchButton: {
-    position: 'absolute',
-    top: 12,
-    right: 12,
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: 'rgba(0, 0, 0, 0.6)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 4,
-    elevation: 4,
   },
   audioLevelContainer: {
     marginBottom: 24,
