@@ -1,6 +1,15 @@
 // Top-level build file where you can add configuration options common to all sub-projects/modules.
 
-buildscript {
+ // Fix for Android SDK environment variable conflict
+if (System.getenv("ANDROID_HOME") != null) {
+    // If ANDROID_HOME is set, prioritize it.
+    // Clear ANDROID_SDK_ROOT system property to avoid conflict.
+    System.clearProperty("ANDROID_SDK_ROOT")
+    // Explicitly set the injected SDK directory to ANDROID_HOME.
+    project.ext.set("android.injected.build.sdk.dir", System.getenv("ANDROID_HOME"))
+}
+
+ buildscript {
   repositories {
     google()
     mavenCentral()

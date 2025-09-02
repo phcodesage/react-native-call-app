@@ -47,33 +47,66 @@ export default function AudioMessage({
   const primaryColor = useThemeColor({}, 'tint');
 
   useEffect(() => {
-    // Generate mock waveform data based on duration
-    const dataPoints = Math.min(50, Math.max(20, Math.floor(duration / 2)));
-    const mockData = Array.from({ length: dataPoints }, () => 
-      Math.random() * 0.8 + 0.2 // Values between 0.2 and 1.0
-    );
-    setWaveformData(mockData);
-
-    // If URI is base64 data, proactively write a temp file so native waveform can render immediately
+    let mounted = true;
+  
     (async () => {
-      try {
-        if (uri && uri.startsWith('data:')) {
-          const mimeMatch = uri.match(/^data:(.*?);/);
+      console.log('[AudioMessage] setting audio mode for playback');
+      await Audio.setAudioModeAsync({
+        playsInSilentModeIOS: true,
+        allowsRecordingIOS: false,
+        staysActiveInBackground: false,
+        shouldDuckAndroid: true,
+        playThroughEarpieceAndroid: false,
+      });
+
+      if (!mounted) return;
+
+      // Generate mock waveform data
+      const mockData = Array.from({ length: 30 }, () => Math.random() * 0.8 + 0.2);
+      setWaveformData(mockData);
+
+      // Write base64 data to temp file if needed
+      if (uri.startsWith('data:')) {
+        try {
+          console.log('[AudioMessage] processing base64 data URI for temp file');
+          // Handle nested data URLs like: data:audio/webm;base64,data:audio/mpeg;base64,ACTUAL_DATA
+          let cleanUri = uri;
+          if (uri.includes('data:audio/') && uri.indexOf('data:audio/') !== uri.lastIndexOf('data:audio/')) {
+            console.log('[AudioMessage] detected nested data URL in useEffect, extracting innermost');
+            const parts = uri.split('data:audio/');
+            cleanUri = 'data:audio/' + parts[parts.length - 1];
+            console.log('[AudioMessage] cleaned URI prefix in useEffect:', cleanUri.slice(0, 50));
+          }
+          
+          const mimeMatch = cleanUri.match(/^data:([^;]+)(?:;[^,]*)?,/);
           const mime = (mimeMatch && mimeMatch[1]) ? mimeMatch[1] : 'audio/m4a';
-          const base64 = uri.includes('base64,') ? uri.split('base64,').pop() : null;
-          if (!base64 || base64.trim().length === 0) return;
-          const ext = mime.includes('wav') ? 'wav' : mime.includes('mp3') ? 'mp3' : mime.includes('aac') ? 'aac' : mime.includes('mpeg') ? 'mp3' : mime.includes('x-m4a') || mime.includes('m4a') ? 'm4a' : 'caf';
-          const fileName = `audio_${Date.now()}.${ext}`;
+          const base64 = cleanUri.includes('base64,') ? cleanUri.split('base64,').pop() : null;
+          if (!base64 || base64.trim().length === 0) throw new Error('Invalid data URI');
+          const mimeBase = mime.toLowerCase();
+          const fileExtension =
+            mimeBase === 'audio/webm' ? 'webm' :
+            mimeBase === 'audio/ogg' ? 'ogg' :
+            mimeBase === 'audio/mpeg' ? 'mp3' :
+            mimeBase === 'audio/wav' ? 'wav' :
+            mimeBase === 'audio/m4a' || mimeBase === 'audio/mp4' ? 'm4a' :
+            'm4a';
+          const fileName = `audio_${timestamp}_${Date.now()}.${fileExtension}`;
           const fileUri = `${FileSystem.cacheDirectory}${fileName}`;
+          console.log('[AudioMessage] writing to temp file:', fileName, 'mime:', mime);
           await FileSystem.writeAsStringAsync(fileUri, base64, { encoding: FileSystem.EncodingType.Base64 });
+          const fileInfo = await FileSystem.getInfoAsync(fileUri);
+          console.log('[AudioMessage] temp file created:', fileInfo);
           setTempFileUri(fileUri);
+        } catch (error) {
+          console.error('Error writing temp file:', error);
         }
-      } catch {}
+      }
     })();
 
     return () => {
+      mounted = false;
       if (sound) {
-        sound.unloadAsync();
+        sound.unloadAsync().catch(() => {});
       }
       if (positionUpdateInterval.current) {
         clearInterval(positionUpdateInterval.current);
@@ -88,12 +121,14 @@ export default function AudioMessage({
   const loadAudio = async (): Promise<Audio.Sound | null> => {
     try {
       setError(null);
+      console.log('[AudioMessage] loadAudio called with URI:', uri?.slice(0, 50) + '...');
       if (!uri || uri.trim().length === 0) {
         console.warn('AudioMessage: empty URI, skipping load');
         setIsLoaded(false);
         return null;
       }
       if (sound) {
+        console.log('[AudioMessage] unloading existing sound');
         await sound.unloadAsync();
       }
 
@@ -103,14 +138,34 @@ export default function AudioMessage({
         // Base64 data URL from server -> write to a temp file for reliable playback
         // Example: data:audio/m4a;base64,AAAA...
         // Sanitize nested data: prefixes and extract mime/base64 robustly
-        const mimeMatch = uri.match(/^data:(.*?);/);
+        // Handle nested data URLs like: data:audio/webm;base64,data:audio/mpeg;base64,ACTUAL_DATA
+        let cleanUri = uri;
+        if (uri.includes('data:audio/') && uri.indexOf('data:audio/') !== uri.lastIndexOf('data:audio/')) {
+          console.log('[AudioMessage] detected nested data URL, extracting innermost');
+          const parts = uri.split('data:audio/');
+          cleanUri = 'data:audio/' + parts[parts.length - 1];
+          console.log('[AudioMessage] cleaned URI prefix:', cleanUri.slice(0, 50));
+        }
+        
+        const mimeMatch = cleanUri.match(/^data:([^;]+)(?:;[^,]*)?,/);
         const mime = (mimeMatch && mimeMatch[1]) ? mimeMatch[1] : 'audio/m4a';
-        const base64 = uri.includes('base64,') ? uri.split('base64,').pop() : null;
-        if (!base64 || base64.trim().length === 0) throw new Error('Invalid data URI');
-        const ext = mime.includes('wav') ? 'wav' : mime.includes('mp3') ? 'mp3' : mime.includes('aac') ? 'aac' : mime.includes('mpeg') ? 'mp3' : mime.includes('x-m4a') || mime.includes('m4a') ? 'm4a' : 'caf';
-        const fileName = `audio_${Date.now()}.${ext}`;
+        const base64Data = cleanUri.includes('base64,') ? cleanUri.split('base64,').pop() : null;
+        if (!base64Data || base64Data.trim().length === 0) throw new Error('Invalid data URI');
+        const mimeBase = mime.toLowerCase();
+        const fileExtension =
+          mimeBase === 'audio/webm' ? 'webm' :
+          mimeBase === 'audio/ogg' ? 'ogg' :
+          mimeBase === 'audio/mpeg' ? 'mp3' :
+          mimeBase === 'audio/wav' ? 'wav' :
+          mimeBase === 'audio/m4a' || mimeBase === 'audio/mp4' ? 'm4a' :
+          'm4a';
+        const fileName = `audio_${timestamp}_${Date.now()}.${fileExtension}`;
         const fileUri = `${FileSystem.cacheDirectory}${fileName}`;
-        await FileSystem.writeAsStringAsync(fileUri, base64, { encoding: FileSystem.EncodingType.Base64 });
+        console.log('[AudioMessage] writing base64 to temp file:', fileName, 'extension:', fileExtension, 'mime:', mime);
+        await FileSystem.writeAsStringAsync(fileUri, base64Data, { encoding: FileSystem.EncodingType.Base64 });
+        console.log('[AudioMessage] temp file written, checking if exists...');
+        const fileInfo = await FileSystem.getInfoAsync(fileUri);
+        console.log('[AudioMessage] temp file info:', fileInfo);
         setTempFileUri(fileUri);
         audioSource = { uri: fileUri };
       } else if (uri.startsWith('file://')) {
@@ -121,16 +176,28 @@ export default function AudioMessage({
         audioSource = { uri };
       }
 
+      console.log('[AudioMessage] creating Audio.Sound with source:', audioSource);
       const { sound: newSound } = await Audio.Sound.createAsync(audioSource, { shouldPlay: false });
+      console.log('[AudioMessage] Audio.Sound created successfully, sound object:', !!newSound);
+
+      if (!newSound) {
+        console.error('[AudioMessage] Sound object is null after creation');
+        setIsLoaded(false);
+        setError('Sound creation failed');
+        return null;
+      }
 
       setSound(newSound);
       setIsLoaded(true);
+      console.log('[AudioMessage] Sound state updated, isLoaded set to true');
 
       newSound.setOnPlaybackStatusUpdate((status) => {
+        console.log('[AudioMessage] playback status update:', status.isLoaded);
         if (status.isLoaded) {
           setCurrentTime(status.positionMillis || 0);
           
           if (status.didJustFinish) {
+            console.log('[AudioMessage] playback finished');
             setIsPlaying(false);
             setCurrentTime(0);
             if (positionUpdateInterval.current) {
@@ -152,28 +219,40 @@ export default function AudioMessage({
 
   const togglePlayback = async () => {
     try {
+      console.log('[AudioMessage] togglePlayback called, sound exists:', !!sound, 'isLoaded:', isLoaded, 'tempFileUri:', tempFileUri);
       if (!uri || uri.trim().length === 0) {
         console.warn('AudioMessage: cannot play, empty URI');
         return;
       }
-      if (!sound) {
+      
+      // Always use tempFileUri if available for base64 data
+      const playUri = tempFileUri || uri;
+      console.log('[AudioMessage] using playUri:', playUri);
+      
+      if (!sound || !isLoaded) {
+        console.log('[AudioMessage] no sound object or not loaded, loading audio...');
         setIsLoading(true);
         const created = await loadAudio();
         setIsLoading(false);
         if (created) {
+          console.log('[AudioMessage] sound loaded, starting playback');
           await created.playAsync();
           setIsPlaying(true);
+        } else {
+          console.error('[AudioMessage] failed to create sound object');
         }
         return;
       }
 
       if (isPlaying) {
+        console.log('[AudioMessage] pausing playback');
         await sound.pauseAsync();
         setIsPlaying(false);
         if (positionUpdateInterval.current) {
           clearInterval(positionUpdateInterval.current);
         }
       } else {
+        console.log('[AudioMessage] starting playback on existing sound');
         await sound.playAsync();
         setIsPlaying(true);
       }

@@ -19,6 +19,7 @@ export function useVoiceRecorderActions(params: {
 
       reader.onloadend = () => {
         const base64data = reader.result as string; // data URL
+        console.log('[VoiceRecorder] sending audio message, blob prefix:', base64data.slice(0, 100));
         socketRef.current?.emit('audio_message', {
           room: roomId,
           from: user?.username || 'Anonymous',

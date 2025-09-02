@@ -87,6 +87,14 @@ android {
     buildToolsVersion rootProject.ext.buildToolsVersion
     compileSdk rootProject.ext.compileSdkVersion
 
+    // Optimize compilation for better performance
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    // NDK parallel builds are handled via gradle.properties
+
     namespace 'com.callapp.mobile'
     defaultConfig {
         applicationId 'com.callapp.mobile'

@@ -462,6 +462,7 @@ export default function ChatScreen() {
       // Ignore own echo
       if (data?.from && user?.username && data.from === user.username) return;
       console.log('[FileMessage][incoming] raw payload:', data);
+      console.log('[FileMessage][incoming] file_url prefix:', data?.file_url?.slice(0, 100));
       const tsInfo = {
         timestamp: data?.timestamp,
         server_timestamp: data?.server_timestamp,
@@ -474,18 +475,39 @@ export default function ChatScreen() {
       console.log('[FileMessage][incoming] ts candidates:', tsInfo);
       const iso = pickTimestampISO(data);
       console.log('[FileMessage][incoming] picked ISO:', iso);
-      const newMsg: Message = {
-        message_id: typeof data?.message_id === 'number' ? data.message_id : parseTimestampSafe(iso),
-        sender: data?.sender || data?.from || 'unknown',
-        timestamp: iso,
-        type: 'file',
-        file_id: data?.file_id,
-        file_name: data?.file_name,
-        file_type: data?.file_type,
-        file_size: data?.file_size,
-        file_url: data?.file_url,
-        status: data?.status || 'delivered',
-      };
+      const rawUrl: string | undefined = data?.file_url;
+      const rawType: string | undefined = data?.file_type;
+      const fileUrl = typeof rawUrl === 'string' ? rawUrl.trim() : rawUrl;
+      const fileType = typeof rawType === 'string' ? rawType.trim() : rawType;
+      const fileUrlL = (fileUrl || '').toLowerCase();
+      const fileTypeL = (fileType || '').toLowerCase();
+      const isAudioLike =
+        (!!fileTypeL && fileTypeL.startsWith('audio/')) ||
+        (!!fileUrlL && fileUrlL.startsWith('data:audio/'));
+
+      // If the server sent audio as a generic file, normalize it into an audio message
+      const newMsg: Message = isAudioLike
+        ? {
+            message_id: typeof data?.message_id === 'number' ? data.message_id : parseTimestampSafe(iso),
+            sender: data?.sender || data?.from || 'unknown',
+            timestamp: iso,
+            type: 'audio',
+            file_url: fileUrl,
+            audio_data: data?.duration ? String(data.duration) : '30',
+            status: data?.status || 'delivered',
+          }
+        : {
+            message_id: typeof data?.message_id === 'number' ? data.message_id : parseTimestampSafe(iso),
+            sender: data?.sender || data?.from || 'unknown',
+            timestamp: iso,
+            type: 'file',
+            file_id: data?.file_id,
+            file_name: data?.file_name,
+            file_type: fileType,
+            file_size: data?.file_size,
+            file_url: fileUrl,
+            status: data?.status || 'delivered',
+          };
 
       setMessages(prev => {
         if (prev.some(msg => msg.message_id === newMsg.message_id)) return prev;
@@ -999,6 +1021,7 @@ export default function ChatScreen() {
   };
 
   const handleIncomingAudioMessage = (data: any) => {
+    console.log('[AudioMessage][incoming] raw audio payload blob prefix:', data?.blob?.slice(0, 100));
     const iso = pickTimestampISO(data);
     const newMessage: Message = {
       message_id: typeof data?.message_id === 'number' ? data.message_id : parseTimestampSafe(iso),
@@ -1775,15 +1798,25 @@ export default function ChatScreen() {
                   </Text>
                 </View>
               ) : null}
-              {item.type === 'audio' ? (
-                <AudioMessage
-                  uri={item.file_url || ''}
-                  duration={item.audio_data ? parseInt(item.audio_data) : 30}
-                  isOutgoing={isOutgoing}
-                  timestamp={new Date(item.timestamp).getTime()}
-                  onReaction={(emoji) => handleSendReaction(item.message_id, emoji)}
-                />
-              ) : item.type === 'file' ? (
+              {(() => {
+                // Treat 'file' messages with audio MIME/data URLs as audio for rendering
+                const fileType = (item.file_type || '').trim().toLowerCase();
+                const fileUrl = (item.file_url || '').trim().toLowerCase();
+                const isAudioLike = item.type === 'audio' || (item.type === 'file' && (fileType.startsWith('audio/') || fileUrl.startsWith('data:audio/')));
+                if (isAudioLike) {
+                  return (
+                    <AudioMessage
+                      uri={item.file_url || ''}
+                      duration={item.audio_data ? parseInt(item.audio_data) : 30}
+                      isOutgoing={isOutgoing}
+                      timestamp={new Date(item.timestamp).getTime()}
+                      onReaction={(emoji) => handleSendReaction(item.message_id, emoji)}
+                    />
+                  );
+                }
+                return null;
+              })()}
+              {!((item.type === 'audio') || (item.type === 'file' && (((item.file_type || '').trim().toLowerCase().startsWith('audio/')) || ((item.file_url || '').trim().toLowerCase().startsWith('data:audio/'))))) && item.type === 'file' ? (
                 <FileMessage
                   file_id={item.file_id}
                   file_name={item.file_name}
@@ -2353,15 +2386,6 @@ export default function ChatScreen() {
           >
             <Ionicons name="videocam" size={18} color="#ffffff" />
           </TouchableOpacity>
-          {__DEV__ && (
-            <TouchableOpacity
-              style={[styles.headerIconPill, { backgroundColor: '#f59e0b' }]}
-              onPress={testNotification}
-              accessibilityLabel="Test Notification"
-            >
-              <Ionicons name="notifications" size={18} color="#ffffff" />
-            </TouchableOpacity>
-          )}
         </View>
       </View>
 

@@ -23,6 +23,7 @@ import CallOngoingNotification from '../services/CallOngoingNotification';
 import AndroidForegroundCallService from '../services/AndroidForegroundCallService';
 import ChangeColorModal from './change-color/ChangeColorModal';
 import FileMessage from './FileMessage';
+import AudioMessage from './AudioMessage';
 
 // RTCView props interface for proper typing
 interface RTCViewProps {
@@ -269,22 +270,35 @@ export const CallScreen: React.FC<CallScreenProps> = ({
   const renderChatMessage = ({ item }: { item: ChatMessage }) => {
     // File/media message
     if (item.type === 'file') {
+      const fileTypeL = (item.file_type || '').trim().toLowerCase();
+      const fileUrlL = (item.file_url || '').trim().toLowerCase();
+      const isAudioLike = (fileTypeL.startsWith('audio/')) || (fileUrlL.startsWith('data:audio/'));
+
       return (
         <View style={[
           styles.messageContainer,
           item.isOwn ? styles.ownMessage : styles.otherMessage
         ]}>
-          <FileMessage
-            file_id={item.file_id}
-            file_name={item.file_name}
-            file_type={item.file_type}
-            file_size={item.file_size}
-            file_url={item.file_url}
-            sender={item.senderName}
-            timestamp={item.timestamp.toISOString()}
-            isOutgoing={item.isOwn}
-            isDark={item.isOwn}
-          />
+          {isAudioLike ? (
+            <AudioMessage
+              uri={item.file_url || ''}
+              duration={30}
+              isOutgoing={item.isOwn}
+              timestamp={item.timestamp.getTime()}
+            />
+          ) : (
+            <FileMessage
+              file_id={item.file_id}
+              file_name={item.file_name}
+              file_type={item.file_type}
+              file_size={item.file_size}
+              file_url={item.file_url}
+              sender={item.senderName}
+              timestamp={item.timestamp.toISOString()}
+              isOutgoing={item.isOwn}
+              isDark={item.isOwn}
+            />
+          )}
           {showTimestamps && (
             <Text style={[
               styles.messageTime,
