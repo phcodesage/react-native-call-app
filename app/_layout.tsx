@@ -48,6 +48,13 @@ function InnerApp() {
     if (!isAuthenticated) return;
     const maybeRestore = async () => {
       try {
+        // If a one-time suppression flag exists (set when user explicitly left chat),
+        // consume it and skip restoring this time.
+        const suppress = await AsyncStorage.getItem('suppress_restore_once');
+        if (suppress) {
+          await AsyncStorage.removeItem('suppress_restore_once');
+          return;
+        }
         const last = await AsyncStorage.getItem('last_room_id');
         // Only redirect if we're not already on a chat route
         const onChatRoute = segments && segments[0] === 'chat';

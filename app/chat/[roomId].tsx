@@ -190,6 +190,30 @@ export default function ChatScreen() {
     }
   };
 
+  // Safe back navigation: only go back if possible, else go to tabs/home
+  const safeBack = () => {
+    try {
+      // Prevent auto-restore into this room on app resume
+      try {
+        AsyncStorage.removeItem('last_room_id');
+        AsyncStorage.setItem('suppress_restore_once', '1');
+      } catch {}
+      const canGoBack = (router as any)?.canGoBack?.() ?? false;
+      if (canGoBack) {
+        router.back();
+      } else {
+        router.replace('/(tabs)');
+      }
+    } catch {
+      // Fallback in case canGoBack is unavailable
+      try {
+        AsyncStorage.removeItem('last_room_id');
+        AsyncStorage.setItem('suppress_restore_once', '1');
+        router.replace('/(tabs)');
+      } catch {}
+    }
+  };
+
   // Quick picker for in-call "Send File" button
   const openQuickFilePicker = async () => {
     try {
@@ -259,6 +283,49 @@ export default function ChatScreen() {
       if (next.has(id)) next.delete(id); else next.add(id);
       return next;
     });
+  };
+
+  // Admin-only: delete all messages via Flask endpoint
+  const handleDeleteAllMessages = () => {
+    if (!user?.isAdmin) return;
+    Alert.alert(
+      'Delete All Messages',
+      'This will permanently delete all messages for all users. Continue?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const res = await fetch(`${API_BASE_URL}/admin/delete_all_messages`, {
+                method: 'POST',
+                credentials: 'include',
+                headers: {
+                  'Content-Type': 'application/json',
+                  ...(token ? { Authorization: `Bearer ${token}` } : {}),
+                },
+              });
+              const json = await res.json().catch(() => null);
+              if (!res.ok || json?.success === false) {
+                const msg = json?.error || `Request failed (${res.status})`;
+                throw new Error(msg);
+              }
+              // Clear local immediately; socket broadcast will also arrive
+              setMessages([]);
+              setUnreadCount(0);
+              setReplyContext(null);
+              setShowContextMenu(false);
+              clientIdToServerIdRef.current.clear();
+              serverIdToClientIdRef.current.clear();
+              Alert.alert('Success', 'All messages have been deleted.');
+            } catch (e: any) {
+              Alert.alert('Error', e?.message || 'Failed to delete all messages');
+            }
+          },
+        },
+      ]
+    );
   };
 
   // Persist last opened chat room id on focus to restore later
@@ -840,6 +907,23 @@ export default function ChatScreen() {
         if (isAtBottom) setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 50);
       } catch (e) {
         console.warn('Failed to handle chat_message_deleted:', e);
+      }
+    });
+
+    // Listen for admin-triggered purge of all messages
+    socket.on('all_messages_deleted', () => {
+      try {
+        // Clear local state when server broadcasts global deletion
+        setMessages([]);
+        setUnreadCount(0);
+        setReplyContext(null);
+        setShowContextMenu(false);
+        clientIdToServerIdRef.current.clear();
+        serverIdToClientIdRef.current.clear();
+        // Optional UI feedback
+        Alert.alert('All messages deleted', 'An admin cleared the conversation history.');
+      } catch (e) {
+        console.warn('Failed to handle all_messages_deleted:', e);
       }
     });
 
@@ -2138,7 +2222,7 @@ export default function ChatScreen() {
     return (
       <ThemedView style={styles.container}>
         <View style={[styles.header, { backgroundColor: isDark ? '#1f2937' : '#ffffff' }]}>
-          <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
+          <TouchableOpacity onPress={safeBack} style={styles.backButton}>
             <Ionicons name="arrow-back" size={24} color={isDark ? '#ffffff' : '#1f2937'} />
           </TouchableOpacity>
           <ThemedText style={styles.headerTitle}>{contactName}</ThemedText>
@@ -2246,7 +2330,7 @@ export default function ChatScreen() {
     <SafeAreaView style={[styles.container, { backgroundColor: isDark ? '#111827' : '#ffffff' }]} edges={['top', 'left', 'right']}>
       {/* Header */}
       <View style={[styles.header, { backgroundColor: '#5b2a86' }]}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
+        <TouchableOpacity onPress={safeBack} style={styles.backButton}>
           <Ionicons name="arrow-back" size={24} color="#ffffff" />
         </TouchableOpacity>
         <View style={styles.headerIdentity}>
@@ -2820,13 +2904,15 @@ export default function ChatScreen() {
                   <Text style={styles.actionButtonText}>Reset BG Color</Text>
                 </TouchableOpacity>
               ) : null}
-              <TouchableOpacity 
-                style={[styles.actionButton, { backgroundColor: '#ef4444' }]}
-                onPress={() => Alert.alert('Delete All Messages', 'This will be available soon.')}
-              >
-                <Ionicons name="trash" size={16} color="white" />
-                <Text style={styles.actionButtonText}>Delete All Messages</Text>
-              </TouchableOpacity>
+              {user?.isAdmin ? (
+                <TouchableOpacity 
+                  style={[styles.actionButton, { backgroundColor: '#ef4444' }]}
+                  onPress={handleDeleteAllMessages}
+                >
+                  <Ionicons name="trash" size={16} color="white" />
+                  <Text style={styles.actionButtonText}>Delete All Messages</Text>
+                </TouchableOpacity>
+              ) : null}
             </View>
           </View>
         ) : null}
