@@ -23,7 +23,6 @@ import CallOngoingNotification from '../services/CallOngoingNotification';
 import AndroidForegroundCallService from '../services/AndroidForegroundCallService';
 import ChangeColorModal from './change-color/ChangeColorModal';
 import FileMessage from './FileMessage';
-import AudioMessage from './AudioMessage';
 
 // RTCView props interface for proper typing
 interface RTCViewProps {
@@ -278,15 +277,7 @@ export const CallScreen: React.FC<CallScreenProps> = ({
         <View style={[
           styles.messageContainer,
           item.isOwn ? styles.ownMessage : styles.otherMessage
-        ]}>
-          {isAudioLike ? (
-            <AudioMessage
-              uri={item.file_url || ''}
-              duration={30}
-              isOutgoing={item.isOwn}
-              timestamp={item.timestamp.getTime()}
-            />
-          ) : (
+        ]}> (
             <FileMessage
               file_id={item.file_id}
               file_name={item.file_name}
@@ -298,7 +289,7 @@ export const CallScreen: React.FC<CallScreenProps> = ({
               isOutgoing={item.isOwn}
               isDark={item.isOwn}
             />
-          )}
+          )
           {showTimestamps && (
             <Text style={[
               styles.messageTime,

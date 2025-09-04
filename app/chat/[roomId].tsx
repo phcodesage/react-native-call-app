@@ -3,8 +3,6 @@ import { CallSetupModal } from '@/components/CallSetupModal';
 import { IncomingCallModal } from '@/components/IncomingCallModal';
 import { ThemedText } from '@/components/ThemedText';
 import { ThemedView } from '@/components/ThemedView';
-import VoiceRecorder from '@/components/voice-recorder/VoiceRecorder';
-import AudioMessage from '@/components/AudioMessage';
 import FileMessage from '@/components/FileMessage';
 import useCallFunctions from '@/components/CallFunction';
 import createSendNotification from '@/components/SendNotification';
@@ -39,8 +37,8 @@ import io, { Socket } from 'socket.io-client';
 import { ENV, getApiUrl, getSocketUrl } from '../../config/env';
 import { Audio, InterruptionModeAndroid, InterruptionModeIOS, Video, ResizeMode } from 'expo-av';
 import ChangeColorModal from '@/components/change-color/ChangeColorModal';
+import { VoiceRecorderModal } from '@/components/VoiceRecorderModal';
 import { useChangeColorActions } from '@/components/change-color/useChangeColor';
-import { useVoiceRecorderActions } from '@/components/voice-recorder/useVoiceRecorder';
 import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
 import { FileUploadService } from '@/services/FileUploadService';
@@ -187,6 +185,79 @@ export default function ChatScreen() {
       });
     } catch (e: any) {
       Alert.alert('Notification error', e?.message || String(e));
+    }
+  };
+
+  // Voice recording -> upload handler
+  const handleSendRecordedAudio = async (uri: string, durationSec: number) => {
+    try {
+      if (!roomId || !token || !user?.username) return;
+      // Build a file-like object for the uploader. Size is optional for regular upload.
+      const file = {
+        uri,
+        name: `voice-${Date.now()}.m4a`,
+        type: 'audio/m4a',
+        // Provide a minimal size to prefer regular upload path
+        size: 1,
+      };
+      setIsUploadingFile(true);
+      setUploadError(null);
+      const uploader = FileUploadService.getInstance();
+      const result = await uploader.uploadFile(
+        file,
+        roomId as string,
+        user.username,
+        token,
+        (p) => {
+          const pct = Math.max(0, Math.min(100, p.percentage));
+          setUploadProgressPct(pct);
+        }
+      );
+
+      // Local echo as a file message (UI detects audio by file_type)
+      const localTs = Date.now();
+      const isoTs = new Date(localTs).toISOString();
+      const fileMsg: Message = {
+        message_id: localTs,
+        sender: user.username,
+        timestamp: isoTs,
+        type: 'file',
+        file_id: result.file_id,
+        file_name: result.file_name,
+        file_type: result.file_type,
+        file_size: result.file_size,
+        file_url: result.file_url,
+        status: 'sent',
+      };
+      setMessages(prev => [...prev, fileMsg]);
+
+      // Notify server via socket so the peer receives it
+      if (socketRef.current) {
+        socketRef.current.emit('send_file', {
+          room: roomId,
+          from: user.username,
+          token: token,
+          file_id: result.file_id,
+          file_name: result.file_name,
+          file_type: result.file_type,
+          file_size: result.file_size,
+          file_url: result.file_url,
+          timestamp: isoTs,
+          client_id: localTs,
+          // Attach duration if backend supports it
+          duration: Math.round(durationSec),
+        });
+      }
+
+      setShowVoiceRecorder(false);
+      setUploadProgressPct(0);
+      setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
+    } catch (e: any) {
+      const msg = e?.message || 'Failed to upload recording';
+      setUploadError(msg);
+      console.warn('[VoiceUpload] error:', e);
+    } finally {
+      setIsUploadingFile(false);
     }
   };
 
@@ -435,7 +506,6 @@ export default function ChatScreen() {
     flatListRef,
     setChatBgColor,
   });
-  const { sendRecording } = useVoiceRecorderActions({ socketRef, roomId: roomId as string, user });
 
   // Helpers: hex <-> rgb
   const clamp255 = (n: number) => Math.max(0, Math.min(255, Math.round(n)));
@@ -1023,15 +1093,31 @@ export default function ChatScreen() {
   const handleIncomingAudioMessage = (data: any) => {
     console.log('[AudioMessage][incoming] raw audio payload blob prefix:', data?.blob?.slice(0, 100));
     const iso = pickTimestampISO(data);
+    // Normalize blob to a proper data URL for AudioMessage to handle consistently
+    const rawBlob = typeof data?.blob === 'string' ? data.blob.trim() : '';
+    const rawType = typeof data?.mime === 'string' ? data.mime.trim() : (typeof data?.file_type === 'string' ? data.file_type.trim() : '');
+    const mime = (rawType && rawType.startsWith('audio/')) ? rawType.toLowerCase() : 'audio/webm';
+    let fileUrl = rawBlob;
+    // Handle nested/corrupted data URLs by extracting the innermost
+    if (fileUrl && fileUrl.includes('data:audio/') && fileUrl.indexOf('data:audio/') !== fileUrl.lastIndexOf('data:audio/')) {
+      const parts = fileUrl.split('data:audio/');
+      fileUrl = 'data:audio/' + parts[parts.length - 1];
+    }
+    // If it's not a data URL, assume it's base64 payload and prepend a header
+    if (fileUrl && !fileUrl.startsWith('data:audio/')) {
+      fileUrl = `data:${mime};base64,${fileUrl}`;
+    }
+
     const newMessage: Message = {
       message_id: typeof data?.message_id === 'number' ? data.message_id : parseTimestampSafe(iso),
       sender: data.from,
       message: '',
       timestamp: iso,
       type: 'audio',
-      file_url: data.blob,
-      audio_data: data.duration ? data.duration.toString() : '30',
-      status: data.status || 'sent'
+      file_url: fileUrl,
+      file_type: mime,
+      audio_data: data?.duration ? String(data.duration) : '30',
+      status: data?.status || 'sent'
     };
 
     setMessages(prev => {
@@ -1803,17 +1889,6 @@ export default function ChatScreen() {
                 const fileType = (item.file_type || '').trim().toLowerCase();
                 const fileUrl = (item.file_url || '').trim().toLowerCase();
                 const isAudioLike = item.type === 'audio' || (item.type === 'file' && (fileType.startsWith('audio/') || fileUrl.startsWith('data:audio/')));
-                if (isAudioLike) {
-                  return (
-                    <AudioMessage
-                      uri={item.file_url || ''}
-                      duration={item.audio_data ? parseInt(item.audio_data) : 30}
-                      isOutgoing={isOutgoing}
-                      timestamp={new Date(item.timestamp).getTime()}
-                      onReaction={(emoji) => handleSendReaction(item.message_id, emoji)}
-                    />
-                  );
-                }
                 return null;
               })()}
               {!((item.type === 'audio') || (item.type === 'file' && (((item.file_type || '').trim().toLowerCase().startsWith('audio/')) || ((item.file_url || '').trim().toLowerCase().startsWith('data:audio/'))))) && item.type === 'file' ? (
@@ -3326,12 +3401,6 @@ export default function ChatScreen() {
         </Modal>
       )}
 
-      {/* Voice Recorder Modal */}
-      <VoiceRecorder
-        visible={showVoiceRecorder}
-        onClose={() => setShowVoiceRecorder(false)}
-        onSendRecording={sendRecording}
-      />
 
       {/* Floating Unread Badge */}
       {!isAtBottom ? (
@@ -3397,6 +3466,14 @@ export default function ChatScreen() {
           </View>
         </TouchableOpacity>
       </Modal>
+
+      {/* Voice Recorder Modal */}
+      <VoiceRecorderModal
+        visible={showVoiceRecorder}
+        onClose={() => setShowVoiceRecorder(false)}
+        onSendRecording={handleSendRecordedAudio}
+        isDark={isDark}
+      />
     </SafeAreaView>
   );
 }
