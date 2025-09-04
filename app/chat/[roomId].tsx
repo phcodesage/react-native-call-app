@@ -4,6 +4,7 @@ import { IncomingCallModal } from '@/components/IncomingCallModal';
 import { ThemedText } from '@/components/ThemedText';
 import { ThemedView } from '@/components/ThemedView';
 import FileMessage from '@/components/FileMessage';
+import AudioMessage from '@/components/AudioMessage';
 import useCallFunctions from '@/components/CallFunction';
 import createSendNotification from '@/components/SendNotification';
 import { useAuth } from '@/contexts/AuthContext';
@@ -97,6 +98,7 @@ export default function ChatScreen() {
   // Refs used by call flow (must be declared before useCallFunctions)
   const callTimerRef = useRef<NodeJS.Timeout | null>(null);
   const pendingOfferRef = useRef<any>(null);
+  const pendingAnswerRef = useRef<any>(null);
   const contactName = roomId?.split('-').find(name => name !== user?.username) || 'Unknown';
   const contactInitial = (contactName?.trim()[0] || 'U').toUpperCase();
   const [messages, setMessages] = useState<Message[]>([]);
@@ -214,14 +216,14 @@ export default function ChatScreen() {
         }
       );
 
-      // Local echo as a file message (UI detects audio by file_type)
+      // Local echo as an audio message so it renders with AudioMessage immediately
       const localTs = Date.now();
       const isoTs = new Date(localTs).toISOString();
       const fileMsg: Message = {
         message_id: localTs,
         sender: user.username,
         timestamp: isoTs,
-        type: 'file',
+        type: 'audio',
         file_id: result.file_id,
         file_name: result.file_name,
         file_type: result.file_type,
@@ -247,6 +249,20 @@ export default function ChatScreen() {
           // Attach duration if backend supports it
           duration: Math.round(durationSec),
         });
+
+        // Also emit audio_message with base64 blob for backend handler
+        try {
+          const b64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
+          const ts = Date.now();
+          socketRef.current.emit('audio_message', {
+            room: roomId,
+            from: user.username,
+            blob: b64, // backend will wrap into data:audio/webm;base64,
+            timestamp: ts,
+          });
+        } catch (e) {
+          console.warn('[VoiceUpload] failed to emit audio_message base64', e);
+        }
       }
 
       setShowVoiceRecorder(false);
@@ -709,6 +725,7 @@ export default function ChatScreen() {
     roomId: roomId as string,
     user,
     pendingOfferRef,
+    pendingAnswerRef,
     callTimerRef,
   });
 
@@ -1855,7 +1872,12 @@ export default function ChatScreen() {
           <View style={[styles.bubbleRow, isOutgoing ? styles.bubbleRowOutgoing : styles.bubbleRowIncoming]}>
             <TouchableOpacity
               activeOpacity={0.9}
-              style={[styles.messageBubble, isOutgoing ? styles.myMessageBubble : styles.otherMessageBubble]}
+              style={[
+                styles.messageBubble, 
+                isOutgoing ? styles.myMessageBubble : styles.otherMessageBubble,
+                // Apply 90% width specifically for audio messages
+                (item.type === 'audio' || (item.type === 'file' && ((item.file_type || '').trim().toLowerCase().startsWith('audio/') || (item.file_url || '').trim().toLowerCase().startsWith('data:audio/')))) && styles.audioMessageBubble
+              ]}
               ref={(r) => {
                 if (r) messageRefs.current.set(item.message_id, r);
               }}
@@ -1885,93 +1907,98 @@ export default function ChatScreen() {
                 </View>
               ) : null}
               {(() => {
-                // Treat 'file' messages with audio MIME/data URLs as audio for rendering
+                // Choose rendering based on type. Treat 'file' messages with audio MIME/data URLs as audio.
                 const fileType = (item.file_type || '').trim().toLowerCase();
-                const fileUrl = (item.file_url || '').trim().toLowerCase();
-                const isAudioLike = item.type === 'audio' || (item.type === 'file' && (fileType.startsWith('audio/') || fileUrl.startsWith('data:audio/')));
-                return null;
-              })()}
-              {!((item.type === 'audio') || (item.type === 'file' && (((item.file_type || '').trim().toLowerCase().startsWith('audio/')) || ((item.file_url || '').trim().toLowerCase().startsWith('data:audio/'))))) && item.type === 'file' ? (
-                <FileMessage
-                  file_id={item.file_id}
-                  file_name={item.file_name}
-                  file_type={item.file_type}
-                  file_size={item.file_size}
-                  file_url={item.file_url}
-                  sender={item.sender}
-                  timestamp={item.timestamp}
-                  isOutgoing={isOutgoing}
-                  isDark={isDark}
-                />
-              ) : (
-                <>
-                  {item.translated_text ? (
-                    showOriginalIds.has(item.message_id) ? (
+                const fileUrl = (item.file_url || '').trim();
+                const isAudioLike = item.type === 'audio' || (item.type === 'file' && (fileType.startsWith('audio/') || fileUrl.toLowerCase().startsWith('data:audio/')));
+                if (isAudioLike) {
+                  return (
+                    <AudioMessage uri={fileUrl} file_url={fileUrl} isOutgoing={isOutgoing} isDark={isDark} embedded={true} />
+                  );
+                }
+                if (item.type === 'file') {
+                  return (
+                    <FileMessage
+                      file_id={item.file_id}
+                      file_name={item.file_name}
+                      file_type={item.file_type}
+                      file_size={item.file_size}
+                      file_url={item.file_url}
+                      sender={item.sender}
+                      timestamp={item.timestamp}
+                      isOutgoing={isOutgoing}
+                      isDark={isDark}
+                    />
+                  );
+                }
+                // Text (with translation helpers)
+                return (
+                  <>
+                    {item.translated_text ? (
+                      showOriginalIds.has(item.message_id) ? (
+                        <Text style={[styles.messageText, { color: '#e5e7eb' }]}>
+                          {messageText}
+                        </Text>
+                      ) : null
+                    ) : (
                       <Text style={[styles.messageText, { color: '#e5e7eb' }]}>
                         {messageText}
                       </Text>
-                    ) : null
-                  ) : (
-                    <Text style={[styles.messageText, { color: '#e5e7eb' }]}>
-                      {messageText}
-                    </Text>
-                  )}
-                  {item.translated_text ? (
-                    <TouchableOpacity
-                      style={[styles.translateButton, { alignSelf: isOutgoing ? 'flex-end' : 'flex-start', backgroundColor: isOutgoing ? '#6d28d9' : '#4338ca' }]}
-                      onPress={() => toggleShowOriginal(item.message_id)}
-                    >
-                      <Text style={styles.translateButtonText}>
-                        {showOriginalIds.has(item.message_id) ? 'Hide original' : 'Show original'}
-                      </Text>
-                    </TouchableOpacity>
-                  ) : null}
-                  {translateTargetId === item.message_id && !item.translated_text && !translatingMessageIds.has(item.message_id) ? (
-                    <TouchableOpacity
-                      style={[styles.translateButton, { alignSelf: isOutgoing ? 'flex-end' : 'flex-start', backgroundColor: isOutgoing ? '#6d28d9' : '#4338ca' }]}
-                      onPress={() => performTranslation(item.message_id, messageText)}
-                    >
-                      <Text style={styles.translateButtonText}>Translate</Text>
-                    </TouchableOpacity>
-                  ) : null}
-                  {translatingMessageIds.has(item.message_id) ? (
-                    <Text style={[styles.translatingText, { color: isOutgoing ? '#d1d5db' : '#6b7280' }]}>Translating…</Text>
-                  ) : item.translated_text ? (
-                    <Text style={[styles.translatedText, { color: '#ffffff' }]}>
-                      {item.translated_text}
-                    </Text>
-                  ) : null}
-                </>
-              )}
-
-              {reactions.length > 0 && (
-                <View style={[styles.reactionsContainer]}> 
-                  {reactions.map(([emoji, users]) => {
-                    const youReacted = user?.username ? (users as string[]).includes(user.username) : false;
-                    return (
+                    )}
+                    {item.translated_text ? (
                       <TouchableOpacity
-                        key={String(emoji)}
-                        style={[styles.reactionBadge, youReacted ? { borderColor: '#a78bfa', borderWidth: 1 } : null]}
-                        onPress={() => youReacted ? handleRemoveReaction(item.message_id) : undefined}
-                        activeOpacity={0.7}
+                        style={[styles.translateButton, { alignSelf: isOutgoing ? 'flex-end' : 'flex-start', backgroundColor: isOutgoing ? '#6d28d9' : '#4338ca' }]}
+                        onPress={() => toggleShowOriginal(item.message_id)}
                       >
-                        <Text>{emoji}</Text>
-                        <Text style={styles.reactionCount}>{(users as string[]).length}</Text>
+                        <Text style={styles.translateButtonText}>
+                          {showOriginalIds.has(item.message_id) ? 'Hide original' : 'Show original'}
+                        </Text>
                       </TouchableOpacity>
-                    );
-                  })}
-                </View>
-              )}
-
-              <Text style={styles.timestamp}>{formatTimestamp(item.timestamp)}</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.reactionButton}
-              onPress={() => openReactionForMessage(item.message_id, isOutgoing)}
-            >
-              <Ionicons name="happy-outline" size={22} color="#888" />
-            </TouchableOpacity>
-          </View>
+                    ) : null}
+                    {translateTargetId === item.message_id && !item.translated_text && !translatingMessageIds.has(item.message_id) ? (
+                      <TouchableOpacity
+                        style={[styles.translateButton, { alignSelf: isOutgoing ? 'flex-end' : 'flex-start', backgroundColor: isOutgoing ? '#6d28d9' : '#4338ca' }]}
+                        onPress={() => performTranslation(item.message_id, messageText)}
+                      >
+                        <Text style={styles.translateButtonText}>Translate</Text>
+                      </TouchableOpacity>
+                    ) : null}
+                    {translatingMessageIds.has(item.message_id) ? (
+                      <Text style={[styles.translatingText, { color: isOutgoing ? '#d1d5db' : '#6b7280' }]}>Translating…</Text>
+                    ) : item.translated_text ? (
+                      <Text style={[styles.translatedText, { color: '#ffffff' }]}>
+                        {item.translated_text}
+                      </Text>
+                    ) : null}
+                  </>
+                );
+              })()}
+          </TouchableOpacity>
+          {reactions.length > 0 && (
+            <View style={[styles.reactionsContainer]}> 
+              {reactions.map(([emoji, users]) => {
+                const youReacted = user?.username ? (users as string[]).includes(user.username) : false;
+                return (
+                  <TouchableOpacity
+                    key={String(emoji)}
+                    style={[styles.reactionBadge, youReacted ? { borderColor: '#a78bfa', borderWidth: 1 } : null]}
+                    onPress={() => youReacted ? handleRemoveReaction(item.message_id) : undefined}
+                    activeOpacity={0.7}
+                  >
+                    <Text>{emoji}</Text>
+                    <Text style={styles.reactionCount}>{(users as string[]).length}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          )}
+          <TouchableOpacity
+            style={styles.reactionButton}
+            onPress={() => openReactionForMessage(item.message_id, isOutgoing)}
+          >
+            <Ionicons name="happy-outline" size={22} color="#888" />
+          </TouchableOpacity>
+        </View>
 
 
           {showTimestamps && (
@@ -3486,11 +3513,11 @@ const styles = StyleSheet.create({
   },
   audioMessageBubble: {
     minWidth: 150,
-    maxWidth: 250,
+    width: '90%',
   },
   audioMessageContent: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: 'column',
+    alignItems: 'flex-start',
     marginBottom: 4,
   },
   audioPlayButton: {
@@ -3616,6 +3643,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 12,
     borderRadius: 16,
+    maxWidth: '85%',
     shadowColor: '#000',
     shadowOffset: {
       width: 0,

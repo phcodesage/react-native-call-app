@@ -214,22 +214,6 @@ export const IncomingCallModal: React.FC<IncomingCallModalProps> = ({
               </TouchableOpacity>
             </View>
 
-            {/* Quick Actions */}
-            <View style={styles.quickActions}>
-              <TouchableOpacity style={styles.quickActionButton}>
-                <Ionicons name="chatbubble" size={20} color={isDark ? '#9ca3af' : '#6b7280'} />
-                <Text style={[styles.quickActionText, { color: isDark ? '#9ca3af' : '#6b7280' }]}>
-                  Message
-                </Text>
-              </TouchableOpacity>
-              
-              <TouchableOpacity style={styles.quickActionButton}>
-                <Ionicons name="person-add" size={20} color={isDark ? '#9ca3af' : '#6b7280'} />
-                <Text style={[styles.quickActionText, { color: isDark ? '#9ca3af' : '#6b7280' }]}>
-                  Remind me
-                </Text>
-              </TouchableOpacity>
-            </View>
           </View>
           </Animated.View>
         </BlurView>
@@ -241,25 +225,26 @@ export const IncomingCallModal: React.FC<IncomingCallModalProps> = ({
 const styles = StyleSheet.create({
   overlay: {
     flex: 1,
-    justifyContent: 'flex-end',
+    justifyContent: 'center',
   },
   blurOverlay: {
     flex: 1,
     width: '100%',
+    height: '100%',
     backgroundColor: 'rgba(0, 0, 0, 0.6)',
   },
   container: {
     width: '100%',
+    height: '100%',
+    justifyContent: 'center',
   },
   background: {
-    borderTopLeftRadius: 32,
-    borderTopRightRadius: 32,
-    paddingTop: 40,
-    paddingBottom: 48,
+    flex: 1,
+    paddingTop: 80,
+    paddingBottom: 80,
     paddingHorizontal: 32,
-    minHeight: 420,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   header: {
     flexDirection: 'row',
@@ -334,7 +319,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-around',
     alignItems: 'center',
-    marginBottom: 32,
+    marginTop: 48,
     paddingHorizontal: 40,
   },
   actionButton: {
@@ -359,19 +344,5 @@ const styles = StyleSheet.create({
   acceptButton: {
     backgroundColor: '#10b981',
     shadowColor: '#10b981',
-  },
-  quickActions: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    paddingHorizontal: 40,
-  },
-  quickActionButton: {
-    alignItems: 'center',
-    gap: 8,
-    padding: 16,
-  },
-  quickActionText: {
-    fontSize: 12,
-    fontWeight: '500',
   },
 });

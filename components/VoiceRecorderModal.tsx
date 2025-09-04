@@ -73,6 +73,7 @@ export const VoiceRecorderModal: React.FC<VoiceRecorderModalProps> = ({
   const [playbackPosition, setPlaybackPosition] = useState(0);
   const [waveformData, setWaveformData] = useState<number[]>([]);
   const [currentPlaybackIndex, setCurrentPlaybackIndex] = useState(0);
+  const [recordedDurationMs, setRecordedDurationMs] = useState(0);
 
   const recordingRef = useRef<Audio.Recording | null>(null);
   const soundRef = useRef<Audio.Sound | null>(null);
@@ -196,14 +197,8 @@ export const VoiceRecorderModal: React.FC<VoiceRecorderModalProps> = ({
     try {
       if (!recordingRef.current) return;
 
-      await recordingRef.current.stopAndUnloadAsync();
-      const uri = recordingRef.current.getURI();
-      recordingRef.current = null;
-
+      // Immediately update UI and clear timers for responsiveness
       setIsRecording(false);
-      setRecordingUri(uri);
-
-      // Clear intervals
       if (durationIntervalRef.current) {
         clearInterval(durationIntervalRef.current);
         durationIntervalRef.current = null;
@@ -213,9 +208,28 @@ export const VoiceRecorderModal: React.FC<VoiceRecorderModalProps> = ({
         waveformIntervalRef.current = null;
       }
 
+      // Stop and unload actual recording
+      await recordingRef.current.stopAndUnloadAsync();
+      const uri = recordingRef.current.getURI();
+      recordingRef.current = null;
+      setRecordingUri(uri);
+
+      // Probe duration precisely using a temporary sound
+      try {
+        const { sound } = await Audio.Sound.createAsync({ uri: uri! }, { shouldPlay: false });
+        const status = await sound.getStatusAsync();
+        if ('durationMillis' in status && typeof status.durationMillis === 'number') {
+          setRecordedDurationMs(status.durationMillis);
+          setDuration(status.durationMillis / 1000);
+        }
+        await sound.unloadAsync();
+      } catch (e) {
+        // Fallback: keep timer-based duration
+      }
+
       // Fill remaining waveform bars with lower heights
       setWaveformData(prev => {
-        const remaining = maxBars - prev.length;
+        const remaining = Math.max(0, maxBars - prev.length);
         const fillerBars = Array(remaining).fill(0).map(() => Math.random() * 20 + 5);
         return [...prev, ...fillerBars];
       });
@@ -230,13 +244,41 @@ export const VoiceRecorderModal: React.FC<VoiceRecorderModalProps> = ({
     try {
       if (!recordingUri) return;
 
+      // Clear any previous polling (legacy)
+      if (playbackIntervalRef.current) {
+        clearInterval(playbackIntervalRef.current);
+        playbackIntervalRef.current = null;
+      }
+
+      // If a sound instance exists, unload to ensure fresh playback
       if (soundRef.current) {
-        await soundRef.current.unloadAsync();
+        try { await soundRef.current.unloadAsync(); } catch {}
+        soundRef.current = null;
       }
 
       const { sound } = await Audio.Sound.createAsync(
         { uri: recordingUri },
-        { shouldPlay: true }
+        { shouldPlay: true },
+        (status) => {
+          if (!status.isLoaded) return;
+          const position = status.positionMillis || 0;
+          const total = (status.durationMillis ?? recordedDurationMs) || (duration * 1000) || 1;
+          const progress = Math.max(0, Math.min(1, position / total));
+          const barIndex = Math.floor(progress * Math.max(1, waveformData.length));
+          setPlaybackPosition(position);
+          setCurrentPlaybackIndex(barIndex);
+
+          if (status.didJustFinish) {
+            setIsPlaying(false);
+            setIsPaused(false);
+            setPlaybackPosition(0);
+            setCurrentPlaybackIndex(0);
+            // Leave sound loaded to allow quick replay; position is at end.
+          } else {
+            // While playing
+            setIsPlaying(status.isPlaying ?? true);
+          }
+        }
       );
 
       soundRef.current = sound;
@@ -244,33 +286,6 @@ export const VoiceRecorderModal: React.FC<VoiceRecorderModalProps> = ({
       setIsPaused(false);
       setPlaybackPosition(0);
       setCurrentPlaybackIndex(0);
-
-      // Update playback position
-      playbackIntervalRef.current = setInterval(async () => {
-        if (soundRef.current) {
-          const status = await soundRef.current.getStatusAsync();
-          if (status.isLoaded) {
-            const position = status.positionMillis || 0;
-            const totalDuration = duration * 1000;
-            const progress = position / totalDuration;
-            const barIndex = Math.floor(progress * waveformData.length);
-            
-            setPlaybackPosition(position);
-            setCurrentPlaybackIndex(barIndex);
-
-            if (status.didJustFinish) {
-              setIsPlaying(false);
-              setIsPaused(false);
-              setPlaybackPosition(0);
-              setCurrentPlaybackIndex(0);
-              if (playbackIntervalRef.current) {
-                clearInterval(playbackIntervalRef.current);
-                playbackIntervalRef.current = null;
-              }
-            }
-          }
-        }
-      }, 100);
 
     } catch (error) {
       console.error('Failed to play recording:', error);
@@ -300,33 +315,6 @@ export const VoiceRecorderModal: React.FC<VoiceRecorderModalProps> = ({
         await soundRef.current.playAsync();
         setIsPlaying(true);
         setIsPaused(false);
-        
-        // Resume playback position tracking
-        playbackIntervalRef.current = setInterval(async () => {
-          if (soundRef.current) {
-            const status = await soundRef.current.getStatusAsync();
-            if (status.isLoaded) {
-              const position = status.positionMillis || 0;
-              const totalDuration = duration * 1000;
-              const progress = position / totalDuration;
-              const barIndex = Math.floor(progress * waveformData.length);
-              
-              setPlaybackPosition(position);
-              setCurrentPlaybackIndex(barIndex);
-
-              if (status.didJustFinish) {
-                setIsPlaying(false);
-                setIsPaused(false);
-                setPlaybackPosition(0);
-                setCurrentPlaybackIndex(0);
-                if (playbackIntervalRef.current) {
-                  clearInterval(playbackIntervalRef.current);
-                  playbackIntervalRef.current = null;
-                }
-              }
-            }
-          }
-        }, 100);
       }
     } catch (error) {
       console.error('Failed to resume recording:', error);
@@ -337,6 +325,7 @@ export const VoiceRecorderModal: React.FC<VoiceRecorderModalProps> = ({
     try {
       if (soundRef.current) {
         await soundRef.current.stopAsync();
+        try { await soundRef.current.setPositionAsync(0); } catch {}
         setIsPlaying(false);
         setIsPaused(false);
         setPlaybackPosition(0);

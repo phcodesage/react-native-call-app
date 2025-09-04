@@ -13,6 +13,7 @@ interface UseCallFunctionsArgs {
   roomId?: string;
   user?: MaybeUser;
   pendingOfferRef: React.RefObject<any>;
+  pendingAnswerRef: React.RefObject<any>;
   callTimerRef: React.RefObject<NodeJS.Timeout | null>;
 }
 
@@ -21,6 +22,7 @@ export function useCallFunctions({
   roomId,
   user,
   pendingOfferRef,
+  pendingAnswerRef,
   callTimerRef,
 }: UseCallFunctionsArgs) {
   // Call-related state
@@ -347,6 +349,15 @@ export function useCallFunctions({
         await webRTCServiceRef.current.initializeCall(detectedCallType);
         // Mark that we've already prepared PC/local stream for this incoming call
         incomingPreparedRef.current = true;
+        
+        // Process the offer immediately after WebRTC initialization
+        if (pendingOfferRef.current) {
+          console.log('Processing offer immediately after WebRTC initialization:', pendingOfferRef.current);
+          const answer = await webRTCServiceRef.current.createAnswer(pendingOfferRef.current);
+          console.log('Answer created and remote description set, queued ICE candidates processed');
+          // Store the answer to send when user accepts the call
+          pendingAnswerRef.current = answer;
+        }
       } else {
         throw new Error('Failed to initialize WebRTC service');
       }
@@ -384,17 +395,15 @@ export function useCallFunctions({
       void stopRinging();
       void showOrUpdateCallNotification('Connecting…');
 
-      if (pendingOfferRef.current && webRTCServiceRef.current) {
-        console.log('Processing pending offer:', pendingOfferRef.current);
-        const answer = await webRTCServiceRef.current.createAnswer(pendingOfferRef.current);
-        if (socketRef.current && roomId) {
-          socketRef.current.emit('signal', {
-            room: roomId,
-            signal: { type: 'answer', sdp: answer.sdp },
-            from: user?.username,
-          });
-          console.log('Answer sent to remote peer');
-        }
+      if (pendingAnswerRef.current && socketRef.current && roomId) {
+        console.log('Sending pre-created answer:', pendingAnswerRef.current);
+        socketRef.current.emit('signal', {
+          room: roomId,
+          signal: { type: 'answer', sdp: pendingAnswerRef.current.sdp },
+          from: user?.username,
+        });
+        console.log('Answer sent to remote peer');
+        pendingAnswerRef.current = null;
         pendingOfferRef.current = null;
       }
     } catch (error) {
@@ -467,10 +476,13 @@ export function useCallFunctions({
       });
     }
 
-    // Reset direction and any pending offer so next call starts fresh
+    // Reset direction and any pending offer/answer so next call starts fresh
     callDirectionRef.current = null;
     if (pendingOfferRef?.current) {
       pendingOfferRef.current = null;
+    }
+    if (pendingAnswerRef?.current) {
+      pendingAnswerRef.current = null;
     }
     // Reset incoming preparation flag
     incomingPreparedRef.current = false;

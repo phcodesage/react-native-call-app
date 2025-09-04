@@ -58,6 +58,7 @@ export class WebRTCService {
   // ICE candidate queuing (like working web implementation)
   private candidateQueue: RTCIceCandidate[] = [];
   private remoteDescriptionSet = false;
+  private processingRemoteDescription = false;
   
   // Event callbacks
   public onLocalStream?: (stream: MediaStream) => void;
@@ -97,6 +98,13 @@ export class WebRTCService {
       }) as ReactNativeRTCPeerConnection;
 
       this.setupPeerConnectionListeners();
+
+      // Process any queued ICE candidates now that peer connection is initialized
+      if (this.candidateQueue.length > 0) {
+        console.log(`WebRTCService: Processing ${this.candidateQueue.length} ICE candidates queued before peer connection initialization`);
+        // Note: We still need to wait for remote description before actually adding them
+        // The candidates will be processed when createAnswer/handleAnswer sets the remote description
+      }
 
       // Load saved device preferences if no devices specified
       let finalDevices = devices;
@@ -284,12 +292,20 @@ export class WebRTCService {
     }
 
     console.log('WebRTCService: Setting remote description (offer)');
-    // Normalize to object with required sdp field and cast to satisfy RN types
-    const normalizedOffer: any = (offer as any).sdp
-      ? offer
-      : { type: (offer as any).type, sdp: (offer as any).sdp };
-    await this.peerConnection.setRemoteDescription(normalizedOffer as any);
-    this.remoteDescriptionSet = true;
+    this.processingRemoteDescription = true;
+    
+    try {
+      // Normalize to object with required sdp field and cast to satisfy RN types
+      const normalizedOffer: any = (offer as any).sdp
+        ? offer
+        : { type: (offer as any).type, sdp: (offer as any).sdp };
+      await this.peerConnection.setRemoteDescription(normalizedOffer as any);
+      this.remoteDescriptionSet = true;
+      this.processingRemoteDescription = false;
+    } catch (error) {
+      this.processingRemoteDescription = false;
+      throw error;
+    }
     
     // Process queued ICE candidates after setting remote description
     console.log(`WebRTCService: Processing ${this.candidateQueue.length} queued ICE candidates`);
@@ -325,11 +341,19 @@ export class WebRTCService {
     }
 
     console.log('WebRTCService: Setting remote description (answer)');
-    const normalizedAnswer: any = (answer as any).sdp
-      ? answer
-      : { type: (answer as any).type, sdp: (answer as any).sdp };
-    await this.peerConnection.setRemoteDescription(normalizedAnswer as any);
-    this.remoteDescriptionSet = true;
+    this.processingRemoteDescription = true;
+    
+    try {
+      const normalizedAnswer: any = (answer as any).sdp
+        ? answer
+        : { type: (answer as any).type, sdp: (answer as any).sdp };
+      await this.peerConnection.setRemoteDescription(normalizedAnswer as any);
+      this.remoteDescriptionSet = true;
+      this.processingRemoteDescription = false;
+    } catch (error) {
+      this.processingRemoteDescription = false;
+      throw error;
+    }
     
     // Process queued ICE candidates after setting remote description
     console.log(`WebRTCService: Processing ${this.candidateQueue.length} queued ICE candidates`);
@@ -345,14 +369,14 @@ export class WebRTCService {
   }
 
   async addIceCandidate(candidate: RTCIceCandidate): Promise<void> {
-    if (!this.peerConnection) {
-      console.warn('WebRTCService: Cannot add ICE candidate - peer connection not initialized');
-      return;
-    }
-
-    // Queue ICE candidates if remote description is not set yet (like working web implementation)
-    if (!this.remoteDescriptionSet) {
-      console.log('WebRTCService: Queueing ICE candidate (remote description not set yet):', candidate.candidate);
+    // Queue ICE candidates if peer connection is not initialized, remote description is not set, or we're processing remote description
+    if (!this.peerConnection || !this.remoteDescriptionSet || this.processingRemoteDescription) {
+      const reason = !this.peerConnection 
+        ? 'peer connection not initialized' 
+        : !this.remoteDescriptionSet 
+        ? 'remote description not set yet'
+        : 'processing remote description';
+      console.log(`WebRTCService: Queueing ICE candidate (${reason}):`, candidate.candidate);
       this.candidateQueue.push(candidate);
       return;
     }
@@ -517,6 +541,7 @@ export class WebRTCService {
       // Reset ICE candidate queuing state
       this.candidateQueue = [];
       this.remoteDescriptionSet = false;
+      this.processingRemoteDescription = false;
 
       // Call the callback after a small delay to ensure cleanup is complete
       setTimeout(() => {
