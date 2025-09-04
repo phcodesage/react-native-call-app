@@ -878,16 +878,6 @@ export const CallSetupModal: React.FC<CallSetupModalProps> = ({
               {/* Show message if no speaker devices available */}
               {speakerDevices.length === 0 && (
                 <View style={styles.deviceSection}>
-                  <View style={styles.deviceHeader}>
-                    <Ionicons
-                      name="volume-high"
-                      size={20}
-                      color={isDark ? '#9ca3af' : '#6b7280'}
-                    />
-                    <Text style={[styles.deviceTitle, { color: isDark ? '#f3f4f6' : '#1f2937' }]}>
-                      Speaker / Audio Output
-                    </Text>
-                  </View>
                   <View style={[styles.noDeviceContainer, { backgroundColor: isDark ? '#374151' : '#f3f4f6' }]}>
                     <Text style={[styles.noDeviceText, { color: isDark ? '#9ca3af' : '#6b7280' }]}>
                       No audio output devices detected. Audio will use default speaker.

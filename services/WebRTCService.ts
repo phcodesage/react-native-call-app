@@ -51,9 +51,11 @@ export class WebRTCService {
   private peerConnection: ReactNativeRTCPeerConnection | null = null;
   private localStream: MediaStream | null = null;
   private remoteStream: MediaStream | null = null;
+  private screenStream: MediaStream | null = null;
   private isCallActive = false;
   private callStartTime: number | null = null;
   private isEnding = false;
+  private screenSharingActive = false;
   
   // ICE candidate queuing (like working web implementation)
   private candidateQueue: RTCIceCandidate[] = [];
@@ -292,7 +294,9 @@ export class WebRTCService {
     }
 
     console.log('WebRTCService: Setting remote description (offer)');
+    // Set processing flag BEFORE any async operations to prevent race conditions
     this.processingRemoteDescription = true;
+    this.remoteDescriptionSet = false; // Ensure it's false during processing
     
     try {
       // Normalize to object with required sdp field and cast to satisfy RN types
@@ -301,10 +305,13 @@ export class WebRTCService {
         : { type: (offer as any).type, sdp: (offer as any).sdp };
       await this.peerConnection.setRemoteDescription(normalizedOffer as any);
       this.remoteDescriptionSet = true;
-      this.processingRemoteDescription = false;
     } catch (error) {
       this.processingRemoteDescription = false;
+      this.remoteDescriptionSet = false;
       throw error;
+    } finally {
+      // Always reset processing flag
+      this.processingRemoteDescription = false;
     }
     
     // Process queued ICE candidates after setting remote description
@@ -341,7 +348,9 @@ export class WebRTCService {
     }
 
     console.log('WebRTCService: Setting remote description (answer)');
+    // Set processing flag BEFORE any async operations to prevent race conditions
     this.processingRemoteDescription = true;
+    this.remoteDescriptionSet = false; // Ensure it's false during processing
     
     try {
       const normalizedAnswer: any = (answer as any).sdp
@@ -349,10 +358,13 @@ export class WebRTCService {
         : { type: (answer as any).type, sdp: (answer as any).sdp };
       await this.peerConnection.setRemoteDescription(normalizedAnswer as any);
       this.remoteDescriptionSet = true;
-      this.processingRemoteDescription = false;
     } catch (error) {
       this.processingRemoteDescription = false;
+      this.remoteDescriptionSet = false;
       throw error;
+    } finally {
+      // Always reset processing flag
+      this.processingRemoteDescription = false;
     }
     
     // Process queued ICE candidates after setting remote description
@@ -501,6 +513,110 @@ export class WebRTCService {
     return videoTrack ? !videoTrack.enabled : false;
   }
 
+  isScreenSharing(): boolean {
+    return this.screenSharingActive;
+  }
+
+  async startScreenShare(): Promise<MediaStream> {
+    if (!this.peerConnection) {
+      throw new Error('Peer connection not initialized');
+    }
+
+    try {
+      console.log('WebRTCService: Starting screen share...');
+      
+      // Get screen capture stream
+      this.screenStream = await mediaDevices.getDisplayMedia();
+
+      console.log('WebRTCService: Screen stream obtained:', this.screenStream);
+
+      // Replace video track in peer connection
+      const videoTrack = this.screenStream.getVideoTracks()[0];
+      if (videoTrack && this.peerConnection.getSenders) {
+        const sender = this.peerConnection.getSenders().find(s => 
+          s.track && s.track.kind === 'video'
+        );
+        if (sender) {
+          await sender.replaceTrack(videoTrack);
+          console.log('WebRTCService: Screen share video track replaced');
+        }
+      }
+
+      // Replace audio track if screen audio is available
+      const audioTrack = this.screenStream.getAudioTracks()[0];
+      if (audioTrack && this.peerConnection.getSenders) {
+        const sender = this.peerConnection.getSenders().find(s => 
+          s.track && s.track.kind === 'audio'
+        );
+        if (sender) {
+          await sender.replaceTrack(audioTrack);
+          console.log('WebRTCService: Screen share audio track replaced');
+        }
+      }
+
+      this.screenSharingActive = true;
+
+      // Listen for screen share end - React Native WebRTC may not support event listeners
+      // We'll handle this in the UI when user manually stops sharing
+
+      return this.screenStream;
+    } catch (error) {
+      console.error('WebRTCService: Error starting screen share:', error);
+      throw error;
+    }
+  }
+
+  async stopScreenShare(): Promise<void> {
+    if (!this.screenSharingActive || !this.screenStream) {
+      return;
+    }
+
+    try {
+      console.log('WebRTCService: Stopping screen share...');
+
+      // Stop screen stream tracks
+      this.screenStream.getTracks().forEach(track => {
+        track.stop();
+      });
+
+      // Restore original camera/mic stream
+      if (this.localStream && this.peerConnection && this.peerConnection.getSenders) {
+        const videoTrack = this.localStream.getVideoTracks()[0];
+        const audioTrack = this.localStream.getAudioTracks()[0];
+
+        // Replace video track back to camera
+        if (videoTrack) {
+          const sender = this.peerConnection.getSenders().find(s => 
+            s.track && s.track.kind === 'video'
+          );
+          if (sender) {
+            await sender.replaceTrack(videoTrack);
+            console.log('WebRTCService: Camera video track restored');
+          }
+        }
+
+        // Replace audio track back to microphone
+        if (audioTrack) {
+          const sender = this.peerConnection.getSenders().find(s => 
+            s.track && s.track.kind === 'audio'
+          );
+          if (sender) {
+            await sender.replaceTrack(audioTrack);
+            console.log('WebRTCService: Microphone audio track restored');
+          }
+        }
+      }
+
+      this.screenStream = null;
+      this.screenSharingActive = false;
+      
+      console.log('WebRTCService: Screen share stopped successfully');
+    } catch (error) {
+      console.error('WebRTCService: Error stopping screen share:', error);
+      throw error;
+    }
+  }
+
   endCall(): void {
     if (this.isEnding) {
       console.log('Call already ending, skipping...');
@@ -511,6 +627,19 @@ export class WebRTCService {
     console.log('Ending call...');
     
     try {
+      // Stop screen sharing if active
+      if (this.screenSharingActive && this.screenStream) {
+        this.screenStream.getTracks().forEach(track => {
+          try {
+            track.stop();
+          } catch (error) {
+            console.warn('Error stopping screen share track:', error);
+          }
+        });
+        this.screenStream = null;
+        this.screenSharingActive = false;
+      }
+
       // Stop local stream
       if (this.localStream) {
         this.localStream.getTracks().forEach(track => {

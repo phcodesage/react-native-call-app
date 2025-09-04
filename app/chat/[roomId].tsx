@@ -698,9 +698,8 @@ export default function ChatScreen() {
   // Call state and handlers
   const {
     showCallSetup,
-    setShowCallSetup,
-    showIncomingCall,
     showCallScreen,
+    showIncomingCall,
     callType,
     incomingCallType,
     incomingCaller,
@@ -709,17 +708,21 @@ export default function ChatScreen() {
     isCallConnected,
     isAudioMuted,
     isVideoMuted,
+    isScreenSharing,
     callDuration,
     webRTCServiceRef,
     handleStartCall,
     handleCallSetupStart,
     handleIncomingCall,
+    handleIncomingIceCandidate,
     handleAcceptCall,
+    handleCancelCallSetup,
     handleDeclineCall,
     handleCallEnd,
     handleToggleMute,
     handleToggleVideo,
     handleSwitchCamera,
+    handleToggleScreenShare,
   } = useCallFunctions({
     socketRef,
     roomId: roomId as string,
@@ -1051,7 +1054,7 @@ export default function ChatScreen() {
               type: signal.type,
               sdp: signal.sdp,
             };
-            await handleIncomingCall({ from, signal });
+            await handleIncomingCall(from, pendingOfferRef.current, 'video');
             break;
 
           case 'answer':
@@ -1062,9 +1065,17 @@ export default function ChatScreen() {
 
           case 'ice-candidate':
           default:
-            // Forward ICE candidates directly; WebRTCService will queue until ready
-            if (signal.candidate && webRTCServiceRef.current) {
-              await webRTCServiceRef.current.addIceCandidate(signal);
+            // Handle ICE candidates - queue them if WebRTC not ready yet
+            if (signal.candidate) {
+              if (webRTCServiceRef.current) {
+                await webRTCServiceRef.current.addIceCandidate(signal);
+              } else {
+                // Queue ICE candidates for incoming calls before WebRTC is initialized
+                console.log('[ICE-QUEUE] Queuing ICE candidate, WebRTC not ready yet');
+                if (typeof handleIncomingIceCandidate === 'function') {
+                  handleIncomingIceCandidate(signal);
+                }
+              }
             }
             break;
 
@@ -3377,7 +3388,7 @@ export default function ChatScreen() {
         callType={callType}
         recipientName={contactName}
         onStartCall={handleCallSetupStart}
-        onCancel={() => setShowCallSetup(false)}
+        onCancel={handleCancelCallSetup}
       />
 
       {/* Incoming Call Modal */}
@@ -3404,6 +3415,8 @@ export default function ChatScreen() {
             onToggleMute={handleToggleMute}
             onToggleVideo={handleToggleVideo}
             onSwitchCamera={handleSwitchCamera}
+            onToggleScreenShare={handleToggleScreenShare}
+            isScreenSharing={isScreenSharing}
             roomId={roomId as string}
             peerChatBgColor={chatBgColor}
             onResetBgColor={resetBgColor}

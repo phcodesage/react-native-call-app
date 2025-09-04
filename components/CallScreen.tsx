@@ -56,6 +56,7 @@ interface CallScreenProps {
   isConnected: boolean;
   isAudioMuted: boolean;
   isVideoMuted: boolean;
+  isScreenSharing?: boolean;
   callDuration: string;
   recipientName: string;
   roomId?: string;
@@ -65,6 +66,7 @@ interface CallScreenProps {
   onToggleMute: () => void;
   onToggleVideo: () => void;
   onSwitchCamera: () => void;
+  onToggleScreenShare?: () => void;
   onToggleSpeaker?: () => void;
   onSendMessage?: (message: string) => void;
   messages?: ChatMessage[];
@@ -85,6 +87,7 @@ export const CallScreen: React.FC<CallScreenProps> = ({
   isConnected,
   isAudioMuted,
   isVideoMuted,
+  isScreenSharing = false,
   callDuration,
   recipientName,
   roomId,
@@ -93,6 +96,7 @@ export const CallScreen: React.FC<CallScreenProps> = ({
   onToggleMute,
   onToggleVideo,
   onSwitchCamera,
+  onToggleScreenShare,
   onToggleSpeaker,
   onSendMessage,
   messages = [],
@@ -384,7 +388,7 @@ export const CallScreen: React.FC<CallScreenProps> = ({
                 streamURL: localStream.toURL(),
                 style: styles.localVideo,
                 objectFit: "cover",
-                mirror: true,
+                mirror: false,
                 zOrder: 1,
               })}
             </TouchableOpacity>
@@ -610,6 +614,19 @@ export const CallScreen: React.FC<CallScreenProps> = ({
               </TouchableOpacity>
             )}
 
+            {onToggleScreenShare && (
+              <TouchableOpacity
+                style={[styles.actionButton, { backgroundColor: isScreenSharing ? '#ef4444' : '#10b981' }]}
+                onPress={onToggleScreenShare}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <Ionicons name={isScreenSharing ? "stop-circle" : "desktop"} size={16} color="#ffffff" />
+                <Text style={styles.actionButtonText}>
+                  {isScreenSharing ? 'Stop Share' : 'Screen Share'}
+                </Text>
+              </TouchableOpacity>
+            )}
+
             {!hasVideo && onToggleSpeaker && (
               <TouchableOpacity
                 style={[styles.actionButton, { backgroundColor: '#6b7280' }]}
@@ -647,6 +664,17 @@ export const CallScreen: React.FC<CallScreenProps> = ({
               >
                 <Ionicons name="document" size={16} color="#ffffff" />
                 <Text style={styles.actionButtonText}>Send File</Text>
+              </TouchableOpacity>
+            )}
+            {!hasVideo && onToggleScreenShare && (
+              <TouchableOpacity
+                style={[styles.actionButton, { backgroundColor: isScreenSharing ? '#ef4444' : '#10b981' }]}
+                onPress={onToggleScreenShare}
+              >
+                <Ionicons name={isScreenSharing ? "stop-circle" : "desktop"} size={16} color="#ffffff" />
+                <Text style={styles.actionButtonText}>
+                  {isScreenSharing ? 'Stop Share' : 'Screen Share'}
+                </Text>
               </TouchableOpacity>
             )}
             {/* Always keep these */}

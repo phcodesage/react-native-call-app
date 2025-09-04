@@ -37,8 +37,17 @@ export function useCallFunctions({
   const [isCallConnected, setIsCallConnected] = useState(false);
   const [isAudioMuted, setIsAudioMuted] = useState(false);
   const [isVideoMuted, setIsVideoMuted] = useState(false);
+  const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [callDuration, setCallDuration] = useState('00:00');
   const webRTCServiceRef = useRef<WebRTCService | null>(null);
+  const pendingIceCandidatesRef = useRef<any[]>([]);
+
+  // Helper function to detect call type from SDP
+  const detectCallTypeFromSDP = (sdp: string): 'audio' | 'video' | null => {
+    if (!sdp) return null;
+    // Check if SDP contains video media description
+    return sdp.includes('m=video') ? 'video' : 'audio';
+  };
   const callDirectionRef = useRef<'outgoing' | 'incoming' | null>(null);
   // Track if we've already prepared the incoming call (created PC and local tracks)
   const incomingPreparedRef = useRef<boolean>(false);
@@ -179,13 +188,15 @@ export function useCallFunctions({
   // Call handling functions
   const initializeWebRTC = async () => {
     try {
-      console.log('Chat: Initializing WebRTC with backend ICE servers');
+      console.log('[INIT-1] Chat: Initializing WebRTC with backend ICE servers');
       const { initializeWebRTC: initWebRTC } = await import('@/config/env');
+      console.log('[INIT-2] Imported initWebRTC function');
       const webRTCService = await initWebRTC();
+      console.log('[INIT-3] WebRTC service created:', !!webRTCService);
       webRTCServiceRef.current = webRTCService;
-      console.log('Chat: WebRTC initialized successfully');
+      console.log('[INIT-4] Chat: WebRTC initialized successfully');
     } catch (error) {
-      console.error('Chat: Failed to initialize WebRTC:', error);
+      console.error('[INIT-ERROR] Chat: Failed to initialize WebRTC:', error);
       throw error;
     }
 
@@ -324,47 +335,29 @@ export function useCallFunctions({
     }
   };
 
-  const handleIncomingCall = async (data: any) => {
-    console.log('Handling incoming call:', data);
-    setIncomingCaller(data.from);
+  const handleIncomingCall = async (caller: string, offer: any, callType: 'audio' | 'video') => {
+    console.log('[CALL-1] Incoming call from:', caller, 'Type:', callType);
+    
+    // Store the offer for processing after WebRTC initialization
+    console.log('[CALL-2] Storing pending offer:', offer?.type);
+    pendingOfferRef.current = offer;
+    // Clear any previous ICE candidates
+    pendingIceCandidatesRef.current = [];
+    console.log('[CALL-2.1] Cleared ICE candidate queue for new call');
+    
+    setIncomingCaller(caller);
+    setShowIncomingCall(true);
 
-    let detectedCallType: 'audio' | 'video' = 'audio';
-    if (data.signal.callType) {
-      detectedCallType = data.signal.callType;
-    } else if (data.signal.sdp) {
-      const hasVideo = data.signal.sdp.includes('m=video');
-      detectedCallType = hasVideo ? 'video' : 'audio';
-      console.log('Detected call type from SDP:', detectedCallType, 'hasVideo:', hasVideo);
-    }
+    // Detect call type from SDP if not explicitly provided
+    const detectedCallType = detectCallTypeFromSDP(offer?.sdp) || callType;
+    console.log('[CALL-3] Detected call type from SDP:', detectedCallType, 'hasVideo:', detectedCallType === 'video');
 
     setIncomingCallType(detectedCallType);
     setCallType(detectedCallType);
 
-    try {
-      if (!webRTCServiceRef.current) {
-        console.warn('WebRTC not initialized, initializing now...');
-        await initializeWebRTC();
-      }
-      if (webRTCServiceRef.current) {
-        await webRTCServiceRef.current.initializeCall(detectedCallType);
-        // Mark that we've already prepared PC/local stream for this incoming call
-        incomingPreparedRef.current = true;
-        
-        // Process the offer immediately after WebRTC initialization
-        if (pendingOfferRef.current) {
-          console.log('Processing offer immediately after WebRTC initialization:', pendingOfferRef.current);
-          const answer = await webRTCServiceRef.current.createAnswer(pendingOfferRef.current);
-          console.log('Answer created and remote description set, queued ICE candidates processed');
-          // Store the answer to send when user accepts the call
-          pendingAnswerRef.current = answer;
-        }
-      } else {
-        throw new Error('Failed to initialize WebRTC service');
-      }
-      console.log('WebRTC initialized for incoming call');
-    } catch (error) {
-      console.error('Error initializing WebRTC for incoming call:', error);
-    }
+    // Don't initialize WebRTC here - do it only when user accepts the call
+    // This matches the working web version pattern
+    console.log('[CALL-4] Incoming call received, waiting for user to accept before WebRTC setup');
 
     // Mark direction as incoming (we were called)
     callDirectionRef.current = 'incoming';
@@ -372,20 +365,47 @@ export function useCallFunctions({
     setShowIncomingCall(true);
     // Start ringing and show notification for incoming call
     void playRinging();
-    void showOrUpdateCallNotification(`Incoming ${detectedCallType} call`, data.from ? `From ${data.from}` : undefined);
+    void showOrUpdateCallNotification(`Incoming ${detectedCallType} call`, `From ${caller}`);
   };
 
   const handleAcceptCall = async () => {
     try {
+      // Initialize WebRTC only when user accepts (matching web version pattern)
+      console.log('[ACCEPT-1] User accepted call, initializing WebRTC now...');
+      await initializeWebRTC();
+      
       if (!webRTCServiceRef.current) {
-        console.warn('WebRTC not initialized, initializing now...');
-        await initializeWebRTC();
-      }
-      // If we've already prepared PC/local stream during ringing, do not re-initialize
-      if (webRTCServiceRef.current && !incomingPreparedRef.current) {
-        await webRTCServiceRef.current.initializeCall(incomingCallType);
-      } else if (!webRTCServiceRef.current) {
+        console.log('[ACCEPT-2] ERROR: WebRTC service is null after initialization');
         throw new Error('Failed to initialize WebRTC service');
+      }
+      console.log('[ACCEPT-3] WebRTC service initialized successfully');
+
+      // Initialize call with media permissions
+      console.log('[ACCEPT-4] Initializing call with type:', incomingCallType);
+      await webRTCServiceRef.current.initializeCall(incomingCallType);
+      console.log('[ACCEPT-5] Call initialization completed');
+      
+      // Process the offer and create answer
+      if (pendingOfferRef.current) {
+        console.log('[ACCEPT-6] Processing offer after WebRTC setup:', pendingOfferRef.current.type);
+        const answer = await webRTCServiceRef.current.createAnswer(pendingOfferRef.current);
+        console.log('[ACCEPT-7] Answer created successfully:', answer.type);
+        pendingAnswerRef.current = answer;
+        
+        // Process queued ICE candidates after answer is created
+        console.log('[ACCEPT-7.1] Processing', pendingIceCandidatesRef.current.length, 'queued ICE candidates');
+        for (const candidate of pendingIceCandidatesRef.current) {
+          try {
+            await webRTCServiceRef.current.addIceCandidate(candidate);
+            console.log('[ACCEPT-7.2] Added queued ICE candidate:', candidate.candidate?.substring(0, 50) + '...');
+          } catch (error) {
+            console.error('[ACCEPT-7.2] Error adding queued ICE candidate:', error);
+          }
+        }
+        pendingIceCandidatesRef.current = []; // Clear the queue
+        console.log('[ACCEPT-7.3] Finished processing queued ICE candidates');
+      } else {
+        console.log('[ACCEPT-6] ERROR: No pending offer to process!');
       }
 
       setShowIncomingCall(false);
@@ -396,22 +416,38 @@ export function useCallFunctions({
       void showOrUpdateCallNotification('Connecting…');
 
       if (pendingAnswerRef.current && socketRef.current && roomId) {
-        console.log('Sending pre-created answer:', pendingAnswerRef.current);
+        console.log('[ACCEPT-8] Sending answer to remote peer:', pendingAnswerRef.current.type);
         socketRef.current.emit('signal', {
           room: roomId,
           signal: { type: 'answer', sdp: pendingAnswerRef.current.sdp },
           from: user?.username,
         });
-        console.log('Answer sent to remote peer');
+        console.log('[ACCEPT-9] Answer sent successfully, cleaning up refs');
         pendingAnswerRef.current = null;
         pendingOfferRef.current = null;
+      } else {
+        console.log('[ACCEPT-8] ERROR: Missing answer, socket, or roomId:', {
+          hasAnswer: !!pendingAnswerRef.current,
+          hasSocket: !!socketRef.current,
+          roomId: roomId
+        });
       }
     } catch (error) {
-      console.error('Error accepting call:', error);
+      console.error('[ACCEPT-ERROR] Error accepting call:', error);
       Alert.alert('Error', 'Failed to accept call. Please try again.');
       void dismissCallNotification();
       handleCallEnd();
     }
+  };
+
+  const handleIncomingIceCandidate = (candidate: any) => {
+    console.log('[ICE-QUEUE-ADD] Queuing ICE candidate:', candidate.candidate?.substring(0, 50) + '...');
+    pendingIceCandidatesRef.current.push(candidate);
+    console.log('[ICE-QUEUE-ADD] Total queued candidates:', pendingIceCandidatesRef.current.length);
+  };
+
+  const handleCancelCallSetup = () => {
+    setShowCallSetup(false);
   };
 
   const handleDeclineCall = () => {
@@ -510,6 +546,25 @@ export function useCallFunctions({
     }
   };
 
+  const handleToggleScreenShare = async () => {
+    if (!webRTCServiceRef.current) return;
+
+    try {
+      if (isScreenSharing) {
+        await webRTCServiceRef.current.stopScreenShare();
+        setIsScreenSharing(false);
+        console.log('Screen sharing stopped');
+      } else {
+        await webRTCServiceRef.current.startScreenShare();
+        setIsScreenSharing(true);
+        console.log('Screen sharing started');
+      }
+    } catch (error) {
+      console.error('Error toggling screen share:', error);
+      Alert.alert('Screen Share Error', 'Failed to toggle screen sharing. Please try again.');
+    }
+  };
+
   // While connected, keep the Android notification updated with duration
   const lastNotifUpdateRef = useRef<number>(0);
   useEffect(() => {
@@ -547,7 +602,6 @@ export function useCallFunctions({
   return {
     // state
     showCallSetup,
-    setShowCallSetup,
     showIncomingCall,
     showCallScreen,
     callType,
@@ -558,6 +612,7 @@ export function useCallFunctions({
     isCallConnected,
     isAudioMuted,
     isVideoMuted,
+    isScreenSharing,
     callDuration,
     // refs
     webRTCServiceRef,
@@ -565,12 +620,15 @@ export function useCallFunctions({
     handleStartCall,
     handleCallSetupStart,
     handleIncomingCall,
+    handleIncomingIceCandidate,
     handleAcceptCall,
+    handleCancelCallSetup,
     handleDeclineCall,
     handleCallEnd,
     handleToggleMute,
     handleToggleVideo,
     handleSwitchCamera,
+    handleToggleScreenShare,
   };
 }
 
