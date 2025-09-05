@@ -406,7 +406,7 @@ export default function ChatScreen() {
     if (!user?.isAdmin) return;
     Alert.alert(
       'Delete All Messages',
-      'This will permanently delete all messages for all users. Continue?',
+      `This will permanently delete all messages in this room (${roomId}). Continue?`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -421,6 +421,9 @@ export default function ChatScreen() {
                   'Content-Type': 'application/json',
                   ...(token ? { Authorization: `Bearer ${token}` } : {}),
                 },
+                body: JSON.stringify({
+                  room: roomId
+                }),
               });
               const json = await res.json().catch(() => null);
               if (!res.ok || json?.success === false) {
@@ -434,7 +437,7 @@ export default function ChatScreen() {
               setShowContextMenu(false);
               clientIdToServerIdRef.current.clear();
               serverIdToClientIdRef.current.clear();
-              Alert.alert('Success', 'All messages have been deleted.');
+              Alert.alert('Success', `All messages in room ${roomId} have been deleted.`);
             } catch (e: any) {
               Alert.alert('Error', e?.message || 'Failed to delete all messages');
             }
