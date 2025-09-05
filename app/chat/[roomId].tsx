@@ -48,6 +48,7 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as FileSystem from 'expo-file-system';
 import * as Clipboard from 'expo-clipboard';
 import * as Notifications from 'expo-notifications';
+import { MessageNotificationService } from '@/services/MessageNotificationService';
 
 const API_BASE_URL = ENV.API_BASE_URL;
 const SOCKET_URL = ENV.SOCKET_SERVER_URL;
@@ -115,9 +116,14 @@ export default function ChatScreen() {
   const [showFilePreviewModal, setShowFilePreviewModal] = useState(false);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [showVoiceRecorder, setShowVoiceRecorder] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingUri, setRecordingUri] = useState<string | null>(null);
+  const [isVoiceModalVisible, setIsVoiceModalVisible] = useState(false);
   const [showColorPicker, setShowColorPicker] = useState(false);
   const [selectedColor, setSelectedColor] = useState<string | null>(null);
   const [chatBgColor, setChatBgColor] = useState<string | null>(null);
+  // Notification service
+  const notificationService = MessageNotificationService.getInstance();
   // Reply UI state
   const [replyContext, setReplyContext] = useState<{ sender: string; message: string; message_id: number } | null>(null);
   const [showWheel, setShowWheel] = useState(false);
@@ -125,6 +131,29 @@ export default function ChatScreen() {
   const [rgbR, setRgbR] = useState<string>('');
   const [rgbG, setRgbG] = useState<string>('');
   const [rgbB, setRgbB] = useState<string>('');
+
+  // Initialize notification service and set current room
+  useEffect(() => {
+    notificationService.requestPermissions();
+    notificationService.setCurrentRoom(roomId as string);
+    
+    // Setup notification handlers
+    const { foregroundSubscription, backgroundSubscription } = notificationService.setupNotificationHandlers(
+      (roomId: string, sender: string) => {
+        // Navigate to the room when message notification is pressed
+        router.push(`/chat/${roomId}`);
+      },
+      (roomId: string, caller: string, callType: string) => {
+        // Handle call notification press
+        router.push(`/chat/${roomId}`);
+      }
+    );
+
+    return () => {
+      foregroundSubscription.remove();
+      backgroundSubscription.remove();
+    };
+  }, [roomId]);
 
   // Ask notification permission once to show success notifications after exports
   useEffect(() => {
@@ -913,6 +942,16 @@ export default function ChatScreen() {
       console.log('Received chat message id:', data?.message_id);
       // Ignore echo of our own message; we already add a local echo
       if (data?.from && user?.username && data.from === user.username) return;
+      
+      // Show notification for messages from other users
+      if (data?.from && data?.message) {
+        notificationService.showMessageNotification(
+          data.from,
+          data.message,
+          roomId as string,
+          data.message_id?.toString()
+        );
+      }
       // Play message sound on incoming chat
       void messageSoundRef.current?.replayAsync().catch((e) => {
         console.warn('Failed to play message sound (incoming):', e);
@@ -969,12 +1008,31 @@ export default function ChatScreen() {
     // Listen for incoming audio messages
     socket.on('audio_message', (data: any) => {
       console.log('Received audio message id:', data?.message_id);
+      // Show notification for audio messages
+      if (data?.from && data?.from !== user?.username) {
+        notificationService.showMessageNotification(
+          data.from,
+          '🎵 Audio message',
+          roomId as string,
+          data.message_id?.toString()
+        );
+      }
       handleIncomingAudioMessage(data);
     });
 
     // Listen for incoming file messages
     socket.on('file_message', (data: any) => {
       console.log('[FileMessage][socket] event received:', data);
+      // Show notification for file messages
+      if (data?.from && data?.from !== user?.username) {
+        const fileName = data?.file_name || 'file';
+        notificationService.showMessageNotification(
+          data.from,
+          `📎 ${fileName}`,
+          roomId as string,
+          data.message_id?.toString()
+        );
+      }
       handleIncomingFileMessage(data);
     });
 
@@ -1054,6 +1112,8 @@ export default function ChatScreen() {
               type: signal.type,
               sdp: signal.sdp,
             };
+            // Show call notification
+            notificationService.showCallNotification(from, 'video', roomId as string);
             await handleIncomingCall(from, pendingOfferRef.current, 'video');
             break;
 
