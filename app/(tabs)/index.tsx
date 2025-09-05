@@ -6,7 +6,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import React, { useEffect, useRef, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { ActivityIndicator, Alert, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, AppState, AppStateStatus, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { io, Socket } from 'socket.io-client';
 import { ENV, getApiUrl, getSocketUrl } from '../../config/env';
@@ -36,6 +36,7 @@ export default function HomeScreen() {
   const [serverWarning, setServerWarning] = useState<string | null>(null);
   // Keep latest online status map to avoid being overwritten by fetchContacts
   const userStatusRef = useRef<Record<string, boolean>>({});
+  const appStateRef = useRef<AppStateStatus>(AppState.currentState);
 
   // Helper function to safely render text
   const safeText = (text: any): string => {
@@ -59,8 +60,29 @@ export default function HomeScreen() {
 
     fetchContacts();
     initializeSocket();
+
+    // Handle app state changes to maintain socket connection
+    const handleAppStateChange = (nextAppState: AppStateStatus) => {
+      if (appStateRef.current.match(/inactive|background/) && nextAppState === 'active') {
+        console.log('[ContactList] App has come to the foreground - reconnecting socket');
+        // Reconnect socket if needed
+        if (socketRef.current && !socketRef.current.connected) {
+          socketRef.current.connect();
+        }
+        // Refresh contacts when coming back to foreground
+        fetchContacts();
+      } else if (nextAppState.match(/inactive|background/)) {
+        console.log('[ContactList] App has gone to the background');
+        // Keep socket connected in background for notifications
+        // Don't disconnect the socket to maintain real-time updates
+      }
+      appStateRef.current = nextAppState;
+    };
+
+    const subscription = AppState.addEventListener('change', handleAppStateChange);
     
     return () => {
+      subscription?.remove();
       if (socketRef.current) {
         socketRef.current.disconnect();
       }
@@ -126,6 +148,65 @@ export default function HomeScreen() {
 
     socket.on('error', (error) => {
       console.error('Socket error:', error);
+    });
+
+    // Listen for global message notifications to update unread counts
+    socket.on('global_message_notification', (data: any) => {
+      try {
+        console.log('[ContactList] Received global message notification:', data);
+        
+        // Update unread count for the sender (only if not in that room)
+        if (data?.from && data?.room) {
+          setContacts(prevContacts => {
+            return prevContacts.map(contact => {
+              if (contact.username === data.from) {
+                const currentUnread = typeof contact.unreadCount === 'number' && !isNaN(contact.unreadCount) ? contact.unreadCount : 0;
+                return {
+                  ...contact,
+                  unreadCount: currentUnread + 1,
+                  lastMessage: data.message || contact.lastMessage,
+                  lastMessageTime: data.timestamp ? formatTimestamp(data.timestamp) : contact.lastMessageTime,
+                };
+              }
+              return contact;
+            });
+          });
+        }
+      } catch (e) {
+        console.error('Error handling global_message_notification in contact list:', e);
+      }
+    });
+
+    // Listen for unread count updates (when user reads messages)
+    socket.on('unread_count_updated', (data: any) => {
+      try {
+        console.log('[ContactList] Unread count updated:', data);
+        
+        if (data?.room && data?.count !== undefined && data?.username === user?.username) {
+          // This is an update for the current user's unread count
+          // Extract the other user from the room name to update their contact
+          const roomUsers = data.room.split('-');
+          const otherUser = roomUsers.find((u: string) => u !== user?.username);
+          
+          if (otherUser) {
+            setContacts(prevContacts => {
+              return prevContacts.map(contact => {
+                if (contact.username === otherUser) {
+                  const validCount = typeof data.count === 'number' && !isNaN(data.count) ? data.count : 0;
+                  console.log(`[ContactList] Updating unread count for ${otherUser}: ${validCount} (original: ${data.count}, type: ${typeof data.count})`);
+                  return {
+                    ...contact,
+                    unreadCount: validCount,
+                  };
+                }
+                return contact;
+              });
+            });
+          }
+        }
+      } catch (e) {
+        console.error('Error handling unread_count_updated:', e);
+      }
     });
   };
 
@@ -194,29 +275,66 @@ export default function HomeScreen() {
       }
 
       // Fetch unread counts
-      const unreadResponse = await fetch(`${API_BASE_URL}/api/unread-counts`, {
-        method: 'GET',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-      });
+      const fetchUnreadCounts = async () => {
+        try {
+          console.log('[FETCH_UNREAD] Making request to /api/unread-counts with token:', token ? 'present' : 'missing');
+          const response = await fetch(`${API_BASE_URL}/api/unread-counts`, {
+            headers: {
+              'Authorization': `Bearer ${token}`,
+              'Content-Type': 'application/json',
+            },
+          });
 
-      let unreadCounts: { [key: string]: number } = {};
-      if (unreadResponse.ok) {
-        const unreadData = await unreadResponse.json();
-        unreadCounts = unreadData.unread_counts || {};
-        console.log('Unread counts:', unreadCounts);
-      }
+          console.log('[FETCH_UNREAD] Response status:', response.status);
+          if (response.ok) {
+            const unreadCounts = await response.json();
+            console.log('Unread counts raw data:', JSON.stringify(unreadCounts, null, 2));
+            return unreadCounts;
+          } else {
+            console.error('Failed to fetch unread counts:', response.status, response.statusText);
+            const errorText = await response.text();
+            console.error('Error response body:', errorText);
+            return {};
+          }
+        } catch (error) {
+          console.error('Error fetching unread counts:', error);
+          return {};
+        }
+      };
 
-      // Transform data to match our Contact interface
-      const transformedContacts: Contact[] = otherUsers.map((username: string) => {
-        // Create room ID using sorted usernames (consistent with backend logic)
-        const roomParticipants = [user?.username, username].sort();
-        const roomId = `${roomParticipants[0]}-${roomParticipants[1]}`;
-        
+      const unreadCounts = await fetchUnreadCounts();
+
+      // Transform users into contacts with latest message info and unread counts
+      const transformedContacts = usersData.map((username: string) => {
+        const roomId = [user?.username, username].sort().join('-');
         const latestMessage = latestMessages[roomId];
-        const unreadCount = unreadCounts[username] || 0;
+        
+        // Try to find unread count by exact username match first, then by partial match
+        // Handle nested structure: unreadCounts.unread_counts or direct unreadCounts
+        const counts = unreadCounts.unread_counts || unreadCounts;
+        let unreadCount = counts[username];
+        if (unreadCount === undefined) {
+          // Check for partial matches (e.g., "m2" for "m2-red")
+          const partialMatch = Object.keys(counts).find(key => 
+            username.includes(key) || key.includes(username)
+          );
+          if (partialMatch) {
+            unreadCount = counts[partialMatch];
+            console.log(`[ContactList] Found partial match for ${username}: ${partialMatch} = ${unreadCount} (type: ${typeof unreadCount})`);
+          }
+        }
+        
+        // Ensure unreadCount is a valid number
+        const validUnreadCount = (() => {
+          if (typeof unreadCount === 'number' && !isNaN(unreadCount) && unreadCount > 0) {
+            return unreadCount;
+          }
+          if (typeof unreadCount === 'string') {
+            const parsed = parseInt(unreadCount, 10);
+            return !isNaN(parsed) && parsed > 0 ? parsed : 0;
+          }
+          return 0;
+        })();
 
         return {
           id: username,
@@ -225,7 +343,7 @@ export default function HomeScreen() {
           online: userStatusRef.current[username] ?? false,
           lastMessage: latestMessage?.message || 'No messages yet',
           lastMessageTime: latestMessage?.timestamp ? formatTimestamp(latestMessage.timestamp) : '',
-          unreadCount: unreadCount,
+          unreadCount: validUnreadCount,
         };
       });
 
@@ -256,7 +374,16 @@ export default function HomeScreen() {
 
   const formatTimestamp = (timestamp: string): string => {
     try {
-      const date = new Date(timestamp);
+      // Clean timestamp - remove trailing Z if present and handle various formats
+      const cleanTimestamp = timestamp.replace(/Z$/, '').replace(/\+00:00Z$/, '+00:00');
+      const date = new Date(cleanTimestamp);
+      
+      // Check if date is valid
+      if (isNaN(date.getTime())) {
+        console.warn(`[formatTimestamp] Invalid timestamp: ${timestamp}`);
+        return '';
+      }
+      
       const now = new Date();
       const diffInMinutes = Math.floor((now.getTime() - date.getTime()) / (1000 * 60));
       
@@ -264,7 +391,8 @@ export default function HomeScreen() {
       if (diffInMinutes < 60) return `${diffInMinutes}m`;
       if (diffInMinutes < 1440) return `${Math.floor(diffInMinutes / 60)}h`;
       return `${Math.floor(diffInMinutes / 1440)}d`;
-    } catch {
+    } catch (error) {
+      console.warn(`[formatTimestamp] Error parsing timestamp: ${timestamp}`, error);
       return '';
     }
   };
@@ -313,6 +441,17 @@ export default function HomeScreen() {
     const username = safeText(contact.username) || 'Unknown';
     const lastMessage = safeText(contact.lastMessage);
     const lastMessageTime = safeText(contact.lastMessageTime);
+    
+    // Debug logging for NaN issue
+    if (contact.username === 'admin') {
+      console.log(`[DEBUG] Admin contact data:`, {
+        username: contact.username,
+        lastMessageTime: contact.lastMessageTime,
+        safeLastMessageTime: lastMessageTime,
+        unreadCount: contact.unreadCount
+      });
+    }
+    
     const avatarLetter = username.charAt(0).toUpperCase();
     
     return (
@@ -362,13 +501,24 @@ export default function HomeScreen() {
                     {lastMessageTime}
                   </Text>
                 ) : null}
-                {(contact.unreadCount && contact.unreadCount > 0) ? (
-                  <View style={styles.unreadBadge}>
-                    <Text style={styles.unreadText}>
-                      {String(contact.unreadCount)}
-                    </Text>
-                  </View>
-                ) : null}
+                {(() => {
+                  const count = contact.unreadCount;
+                  // Only log if there might be an issue
+                  if (count && (typeof count !== 'number' || isNaN(count))) {
+                    console.log(`[Badge Debug] ${contact.username}: INVALID count=${count}, type=${typeof count}, isNaN=${isNaN(count)}`);
+                  }
+                  
+                  if (typeof count === 'number' && count > 0 && !isNaN(count)) {
+                    return (
+                      <View style={styles.unreadBadge}>
+                        <Text style={styles.unreadText}>
+                          {count > 99 ? '99+' : String(count)}
+                        </Text>
+                      </View>
+                    );
+                  }
+                  return null;
+                })()}
               </View>
             </View>
             {lastMessage.length > 0 ? (

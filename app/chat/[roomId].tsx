@@ -40,6 +40,7 @@ import { Audio, InterruptionModeAndroid, InterruptionModeIOS, Video, ResizeMode 
 import ChangeColorModal from '@/components/change-color/ChangeColorModal';
 import { VoiceRecorderModal } from '@/components/VoiceRecorderModal';
 import { useChangeColorActions } from '@/components/change-color/useChangeColor';
+import { MessageStatusIndicator } from '@/components/MessageStatusIndicator';
 import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
 import { FileUploadService } from '@/services/FileUploadService';
@@ -189,6 +190,7 @@ export default function ChatScreen() {
   }, []);
   const [serverWarning, setServerWarning] = useState<string | null>(null);
   const [selectedMessageId, setSelectedMessageId] = useState<number | null>(null);
+  const [showStatusTextForId, setShowStatusTextForId] = useState<number | null>(null);
   // Anchor for reaction emoji picker: screen coordinates and direction
   const [selectedMessagePos, setSelectedMessagePos] = useState<{ id: number; x: number; y: number; isOutgoing: boolean } | null>(null);
   // Refs to measure each message bubble position on screen
@@ -203,6 +205,8 @@ export default function ChatScreen() {
   // Map local echo client_id <-> server message_id to bridge live events (e.g., reactions)
   const clientIdToServerIdRef = useRef(new Map<number, number>());
   const serverIdToClientIdRef = useRef(new Map<number, number>());
+  // Track which message ids we've already sent mark_seen for to avoid spamming
+  const seenRequestedRef = useRef<Set<number>>(new Set());
 
   // Dev helper to verify notifications in debug builds
   const testNotification = async () => {
@@ -259,6 +263,7 @@ export default function ChatScreen() {
         file_size: result.file_size,
         file_url: result.file_url,
         status: 'sent',
+        client_id: localTs,
       };
       setMessages(prev => [...prev, fileMsg]);
 
@@ -469,14 +474,14 @@ export default function ChatScreen() {
   // Accepts either { username: emoji } or { emoji: [users] } and produces { emoji: [users] }
   const normalizeReactions = (input: any): { [emoji: string]: string[] } => {
     if (!input) {
-      console.log('[reactions][normalize] input is empty/null -> {}');
+      //console.log('[reactions][normalize] input is empty/null -> {}');
       return {};
     }
-    console.log('[reactions][normalize] input:', input);
+    //console.log('[reactions][normalize] input:', input);
     // If already in emoji->users form
     const firstVal = input && typeof input === 'object' ? (Object.values(input as any)[0] as any) : undefined;
     if (firstVal && Array.isArray(firstVal)) {
-      console.log('[reactions][normalize] detected emoji->users map, returning as-is');
+      //console.log('[reactions][normalize] detected emoji->users map, returning as-is');
       return input as { [emoji: string]: string[] };
     }
     // username->emoji form
@@ -486,7 +491,7 @@ export default function ChatScreen() {
       if (!result[e]) result[e] = [];
       if (!result[e].includes(u)) result[e].push(u);
     });
-    console.log('[reactions][normalize] converted to emoji->users:', result);
+    //console.log('[reactions][normalize] converted to emoji->users:', result);
     return result;
   };
 
@@ -833,6 +838,8 @@ export default function ChatScreen() {
 
   useEffect(() => {
     if (roomId && token) {
+      // Reset seen tracking for new room
+      try { seenRequestedRef.current.clear(); } catch {}
       // Mark as initial load for this room
       isInitialLoadRef.current = true;
       // Reset messages immediately to avoid showing stale while loading
@@ -934,6 +941,13 @@ export default function ChatScreen() {
       
       // Join the room for this conversation
       socket.emit('join', { room: roomId });
+      
+      // Mark messages as read when entering the room
+      console.log(`[ChatRoom] Emitting mark_messages_read for room: ${roomId}, user: ${user.username}`);
+      socket.emit('mark_messages_read', { 
+        room: roomId,
+        username: user.username 
+      });
     });
 
     socket.on('disconnect', () => {
@@ -943,8 +957,35 @@ export default function ChatScreen() {
     // Listen for incoming chat messages
     socket.on('receive_chat_message', (data: any) => {
       console.log('Received chat message id:', data?.message_id);
-      // Ignore echo of our own message; we already add a local echo
-      if (data?.from && user?.username && data.from === user.username) return;
+      // If this is our own message echo, reconcile local echo with server-confirmed data
+      if (data?.from && user?.username && data.from === user.username) {
+        try {
+          const serverId = typeof data?.message_id === 'number' ? data.message_id : undefined;
+          const clientId = typeof data?.client_id === 'number' ? data.client_id : undefined;
+          if (serverId && clientId) {
+            // Map ids for future lookups
+            try {
+              clientIdToServerIdRef.current.set(clientId, serverId);
+              serverIdToClientIdRef.current.set(serverId, clientId);
+            } catch {}
+          }
+          // Update the local echo message (by client id) with the real server id and status
+          setMessages(prev => prev.map(m => {
+            const matchByClient = clientId && (m.client_id === clientId || m.message_id === clientId);
+            if (matchByClient && m.sender === user.username) {
+              return {
+                ...m,
+                message_id: serverId || m.message_id,
+                status: data?.status || 'delivered',
+              };
+            }
+            return m;
+          }));
+        } catch (e) {
+          console.warn('[Chat][own-echo] reconcile failed:', e);
+        }
+        return;
+      }
       
       // Show notification for messages from other users
       if (data?.from && data?.message) {
@@ -997,9 +1038,53 @@ export default function ChatScreen() {
       }
     });
 
+    // Listen for global message notifications (for users not in the current room)
+    socket.on('global_message_notification', (data: any) => {
+      try {
+        console.log('[GlobalNotification] Received global message notification:', data);
+        
+        // Only show notification if this message is NOT for the current room
+        // (messages for current room are handled by receive_chat_message)
+        if (data?.room && data.room !== roomId) {
+          console.log('[GlobalNotification] Showing notification for different room:', data.room);
+          
+          // Show notification for messages from other rooms
+          if (data?.from && data?.message) {  
+            notificationService.showMessageNotification(
+              data.from,
+              data.message,
+              data.room,
+              data.message_id?.toString()
+            );
+          }
+        } else {
+          console.log('[GlobalNotification] Skipping notification - same room or no room data');
+        }
+      } catch (e) {
+        console.error('Error handling global_message_notification:', e);
+      }
+    });
+
     socket.on('message_delivered', (data: any) => {
-      console.log('Message delivered id:', data?.message_id);
+      console.log('🟢 [CLIENT] Message delivered event received:', JSON.stringify(data));
+      console.log('[CLIENT] Current messages state before update:', messages.map(m => ({ id: m.message_id, status: m.status, sender: m.sender })));
+      console.log('[CLIENT] Updating message', data?.message_id, 'to delivered');
       updateMessageStatus(data.message_id, 'delivered');
+    });
+
+    // Seen receipts from backend
+    socket.on('messages_seen', (data: any) => {
+      try {
+        const ids: any[] = Array.isArray(data?.message_ids) ? data.message_ids : [];
+        console.log('🔵 [CLIENT] messages_seen event received:', JSON.stringify(data));
+        console.log('[CLIENT] Current messages state before seen update:', messages.map(m => ({ id: m.message_id, status: m.status, sender: m.sender })));
+        console.log('[CLIENT] Updating messages', ids, 'to seen');
+        if (ids.length) {
+          setMessages(prev => prev.map(m => (ids.includes(m.message_id) ? { ...m, status: 'seen' } : m)));
+        }
+      } catch (e) {
+        console.warn('Failed to handle messages_seen:', e);
+      }
     });
 
     // Listen for live typing events
@@ -1334,22 +1419,56 @@ export default function ChatScreen() {
   };
 
   const updateMessageStatus = (messageId: number, status: string) => {
-    setMessages(prevMessages => 
-      prevMessages.map(msg => 
-        msg.message_id === messageId ? { ...msg, status } : msg
-      )
-    );
+    console.log('[CLIENT] updateMessageStatus called with messageId:', messageId, 'status:', status);
+    console.log('[CLIENT] Current messages count:', messages.length);
+    console.log('[CLIENT] serverIdToClientIdRef map:', Array.from(serverIdToClientIdRef.current.entries()));
+    
+    setMessages(prevMessages => {
+      console.log('[CLIENT] Searching for message with ID:', messageId, 'in', prevMessages.length, 'messages');
+      let updated = false;
+      // First pass: try by server message_id
+      let next = prevMessages.map(msg => {
+        if (msg.message_id === messageId) {
+          console.log('[CLIENT] Found message by server ID, updating status from', msg.status, 'to', status);
+          updated = true;
+          return { ...msg, status };
+        }
+        return msg;
+      });
+      if (updated) {
+        console.log('[CLIENT] Message updated successfully by server ID');
+        return next;
+      }
+      
+      // Second pass: map server id -> client id and try matching by client echo
+      try {
+        const clientId = serverIdToClientIdRef.current.get(messageId);
+        console.log('[CLIENT] Mapped server ID', messageId, 'to client ID:', clientId);
+        if (clientId) {
+          next = prevMessages.map(msg => {
+            if (msg.client_id === clientId || msg.message_id === clientId) {
+              console.log('[CLIENT] Found message by client ID, updating status from', msg.status, 'to', status);
+              return { ...msg, status };
+            }
+            return msg;
+          });
+          return next;
+        }
+      } catch {}
+      
+      console.log('[CLIENT] No message found with ID:', messageId);
+      return next;
+    });
   };
 
   const handleSendReaction = async (messageId: number, emoji: string) => {
     if (!roomId || !user?.username) return;
-    // Optimistic update
+    // Optimistic add
     console.log('[reactions][send] optimistic add', { messageId, emoji, user: user.username });
-    setMessages(prev => prev.map(m => (m.message_id === messageId ? { ...m, reactions: addUserReactionLocal(m.reactions, user.username!, emoji) } : m)));
-    setSelectedMessagePos(null);
+    setMessages(prev => prev.map(m => (m.message_id === messageId ? { ...m, reactions: addUserReactionLocal(m.reactions, emoji, user.username!) } : m)));
     try {
-      console.log('[reactions][send] POST /react_message');
-      const resp = await fetch(getApiUrl('/react_message'), {
+      console.log('[reactions][send] POST /send_reaction');
+      const resp = await fetch(getApiUrl('/send_reaction'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1832,6 +1951,7 @@ export default function ChatScreen() {
         : undefined;
 
       // Send message via socket
+      console.log('[DEBUG] Sending message with client_id:', localTs);
       socketRef.current.emit('send_chat_message', {
         room: roomId,
         message: messageToSend,
@@ -1849,13 +1969,18 @@ export default function ChatScreen() {
         timestamp: isoTs,
         type: 'text',
         status: 'sent',
+        client_id: localTs,
       };
+      console.log('[DEBUG] Created local message with status:', localMsg.status, 'client_id:', localMsg.client_id);
       if (replyPayload) {
         localMsg.reply_sender = replyPayload.sender;
         localMsg.reply_content = replyPayload.message;
         localMsg.reply_to_message_id = Number(replyPayload.message_id);
       }
-      setMessages(prev => [...prev, localMsg]);
+      setMessages(prev => {
+        console.log('[DEBUG] Adding local message to state:', localMsg);
+        return [...prev, localMsg];
+      });
       // Play message sound on send
       void messageSoundRef.current?.replayAsync().catch((e) => {
         console.warn('Failed to play message sound (send):', e);
@@ -1933,6 +2058,16 @@ export default function ChatScreen() {
     const messageText = safeText(item.content || item.message || '');
     const senderName = safeText(item.sender);
     const reactions = item.reactions ? Object.entries(item.reactions) : [];
+    
+    // Debug logging for message status
+    console.log('[DEBUG] Rendering message:', {
+      message_id: item.message_id,
+      sender: item.sender,
+      isOutgoing,
+      status: item.status,
+      type: item.type,
+      client_id: item.client_id
+    });
 
     return (
       <View style={[styles.messageRow, isOutgoing ? styles.myMessageRow : styles.otherMessageRow]}>
@@ -1956,7 +2091,16 @@ export default function ChatScreen() {
                 if (r) messageRefs.current.set(item.message_id, r);
               }}
               onPress={() => {
-                if (item.type === 'text') toggleTranslateTarget(item.message_id);
+                if (item.type === 'text') {
+                  // Toggle status text display for outgoing messages
+                  if (isOutgoing) {
+                    setShowStatusTextForId(prev => prev === item.message_id ? null : item.message_id);
+                  } else {
+                    toggleTranslateTarget(item.message_id);
+                  }
+                } else {
+                  toggleTranslateTarget(item.message_id);
+                }
               }}
               onLongPress={() => openContextMenu(item)}
               delayLongPress={250}
@@ -1987,7 +2131,15 @@ export default function ChatScreen() {
                 const isAudioLike = item.type === 'audio' || (item.type === 'file' && (fileType.startsWith('audio/') || fileUrl.toLowerCase().startsWith('data:audio/')));
                 if (isAudioLike) {
                   return (
-                    <AudioMessage uri={fileUrl} file_url={fileUrl} isOutgoing={isOutgoing} isDark={isDark} embedded={true} />
+                    <AudioMessage 
+                      uri={fileUrl} 
+                      file_url={fileUrl} 
+                      isOutgoing={isOutgoing} 
+                      isDark={isDark} 
+                      embedded={true} 
+                      status={item.status} 
+                      showStatusText={showStatusTextForId === item.message_id}
+                    />
                   );
                 }
                 if (item.type === 'file') {
@@ -2002,6 +2154,8 @@ export default function ChatScreen() {
                       timestamp={item.timestamp}
                       isOutgoing={isOutgoing}
                       isDark={isDark}
+                      status={item.status}
+                      showStatusText={showStatusTextForId === item.message_id}
                     />
                   );
                 }
@@ -2047,6 +2201,18 @@ export default function ChatScreen() {
                   </>
                 );
               })()}
+              
+              {/* Status indicator for text messages */}
+              {item.type === 'text' && isOutgoing && (
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', marginTop: 4 }}>
+                  <MessageStatusIndicator 
+                    status={item.status} 
+                    isOutgoing={isOutgoing} 
+                    size={12} 
+                    showText={showStatusTextForId === item.message_id}
+                  />
+                </View>
+              )}
           </TouchableOpacity>
           {reactions.length > 0 && (
             <View style={[styles.reactionsContainer]}> 

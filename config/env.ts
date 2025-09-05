@@ -47,8 +47,8 @@ type EnvConfig = {
 // Environment configuration
 export const ENV: EnvConfig = {
   // API Configuration
-  API_BASE_URL: process.env.EXPO_PUBLIC_API_BASE_URL || 'https://add.flask-meet.site',
-  SOCKET_SERVER_URL: process.env.EXPO_PUBLIC_SOCKET_SERVER_URL || 'https://add.flask-meet.site',
+  API_BASE_URL: process.env.EXPO_PUBLIC_API_BASE_URL || 'https://drac.flask-meet.site',
+  SOCKET_SERVER_URL: process.env.EXPO_PUBLIC_SOCKET_SERVER_URL || 'https://drac.flask-meet.site',
 
   // WebRTC Configuration
   STUN_SERVER_URL: process.env.EXPO_PUBLIC_STUN_SERVER_URL || 'stun:stun.l.google.com:19302',
@@ -57,7 +57,7 @@ export const ENV: EnvConfig = {
   TURN_PASSWORD: process.env.EXPO_PUBLIC_TURN_PASSWORD || '',
 
   // Authentication
-  AUTH_BASE_URL: process.env.EXPO_PUBLIC_AUTH_BASE_URL || 'https://add.flask-meet.site',
+  AUTH_BASE_URL: process.env.EXPO_PUBLIC_AUTH_BASE_URL || 'https://drac.flask-meet.site',
   JWT_SECRET_KEY: process.env.EXPO_PUBLIC_JWT_SECRET_KEY || 'your-jwt-secret-key-here',
   API_KEY: process.env.EXPO_PUBLIC_API_KEY || 'your-api-key-here',
 

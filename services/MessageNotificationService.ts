@@ -40,9 +40,13 @@ export class MessageNotificationService {
   }
 
   private setupAppStateListener() {
+    // Get initial app state
+    this.isAppInForeground = AppState.currentState === 'active';
+    console.log('[NotificationService] Initial app state:', AppState.currentState);
+    
     AppState.addEventListener('change', (nextAppState) => {
       this.isAppInForeground = nextAppState === 'active';
-      console.log('[NotificationService] App state changed:', nextAppState);
+      console.log('[NotificationService] App state changed:', nextAppState, 'isAppInForeground:', this.isAppInForeground);
     });
   }
 
@@ -109,11 +113,23 @@ export class MessageNotificationService {
       // 1. App is in foreground AND user is in the same room
       // 2. User hasn't granted permissions
       const hasPermissions = await this.requestPermissions();
-      if (!hasPermissions) return;
+      if (!hasPermissions) {
+        console.log('[NotificationService] No permissions granted');
+        return;
+      }
 
       const shouldShowNotification = 
         !this.isAppInForeground || 
         (this.isAppInForeground && this.currentRoomId !== roomId);
+
+      console.log('[NotificationService] Notification decision:', {
+        isAppInForeground: this.isAppInForeground,
+        currentRoomId: this.currentRoomId,
+        messageRoomId: roomId,
+        shouldShowNotification,
+        sender,
+        message: message.substring(0, 50) + '...'
+      });
 
       if (!shouldShowNotification) {
         console.log('[NotificationService] Skipping notification - user is in the same room');
@@ -127,7 +143,7 @@ export class MessageNotificationService {
 
       const notificationId = messageId || `msg_${Date.now()}`;
 
-      await Notifications.scheduleNotificationAsync({
+      const notificationRequest = {
         identifier: notificationId,
         content: {
           title: sender,
@@ -140,9 +156,19 @@ export class MessageNotificationService {
           },
           categoryIdentifier: 'message',
           sound: 'default',
+          ...(Platform.OS === 'android' && {
+            channelId: 'messages',
+            priority: Notifications.AndroidNotificationPriority.HIGH,
+          }),
         },
         trigger: null, // Show immediately
-      });
+      };
+
+      console.log('[NotificationService] About to schedule notification:', notificationRequest);
+      
+      await Notifications.scheduleNotificationAsync(notificationRequest);
+
+      console.log('[NotificationService] Notification scheduled successfully');
 
       console.log('[NotificationService] Message notification shown:', {
         sender,

@@ -1,14 +1,17 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Animated } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { MessageStatusIndicator } from './MessageStatusIndicator';
 import { Audio } from 'expo-av';
 
 interface AudioMessageProps {
-  uri?: string; // Prefer uri (data URL or http URL)
-  file_url?: string; // Back-compat in case prop is passed like FileMessage
+  uri?: string;
+  file_url?: string;
   isOutgoing: boolean;
   isDark: boolean;
-  embedded?: boolean; // if true, render without outer bubble background
+  embedded?: boolean;
+  status?: string;
+  showStatusText?: boolean;
 }
 
 const WaveBar: React.FC<{ height: number; active: boolean; color: string; activeColor: string }> = ({ height, active, color, activeColor }) => {
@@ -25,7 +28,7 @@ const WaveBar: React.FC<{ height: number; active: boolean; color: string; active
   );
 };
 
-const AudioMessage: React.FC<AudioMessageProps> = ({ uri, file_url, isOutgoing, isDark, embedded = false }) => {
+const AudioMessage: React.FC<AudioMessageProps> = ({ uri, file_url, isOutgoing, isDark, embedded = false, status, showStatusText = false }) => {
   const sourceUri = (uri || file_url || '').trim();
   const [isPlaying, setIsPlaying] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
@@ -155,9 +158,17 @@ const AudioMessage: React.FC<AudioMessageProps> = ({ uri, file_url, isOutgoing, 
             ))}
           </View>
         </View>
-        <Text style={[styles.timeText, { color: isOutgoing ? 'rgba(255,255,255,0.9)' : (isDark ? '#d1d5db' : '#374151') }]}>
-          {format(isPlaying || isPaused ? positionMs : (durationMs || 1))}
-        </Text>
+        <View style={styles.timeAndStatus}>
+          <Text style={[styles.timeText, { color: isOutgoing ? 'rgba(255,255,255,0.9)' : (isDark ? '#d1d5db' : '#374151') }]}>
+            {format(isPlaying || isPaused ? positionMs : (durationMs || 1))}
+          </Text>
+          <MessageStatusIndicator 
+            status={status} 
+            isOutgoing={isOutgoing} 
+            size={10} 
+            showText={showStatusText}
+          />
+        </View>
       </View>
     </View>
   );
@@ -219,5 +230,10 @@ const styles = StyleSheet.create({
     marginTop: 4,
     fontSize: 12,
     alignSelf: 'flex-end',
+  },
+  timeAndStatus: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
   },
 });

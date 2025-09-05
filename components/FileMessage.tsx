@@ -12,6 +12,7 @@ import {
   Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { MessageStatusIndicator } from './MessageStatusIndicator';
 // Using expo-av for now, will migrate to expo-video in SDK 54
 import { Video, ResizeMode } from 'expo-av';
 import * as FileSystem from 'expo-file-system';
@@ -30,6 +31,8 @@ interface FileMessageProps {
   timestamp: string;
   isOutgoing: boolean;
   isDark: boolean;
+  status?: string;
+  showStatusText?: boolean;
 }
 
 export default function FileMessage({
@@ -42,6 +45,8 @@ export default function FileMessage({
   timestamp,
   isOutgoing,
   isDark,
+  status,
+  showStatusText = false,
 }: FileMessageProps) {
   const [showFullScreen, setShowFullScreen] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
@@ -345,6 +350,16 @@ export default function FileMessage({
               </Text>
             </TouchableOpacity>
           )}
+          
+          {/* Status indicator */}
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', marginTop: 4 }}>
+            <MessageStatusIndicator 
+              status={status} 
+              isOutgoing={isOutgoing} 
+              size={10} 
+              showText={showStatusText}
+            />
+          </View>
         </View>
       </View>
 
