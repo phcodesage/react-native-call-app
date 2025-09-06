@@ -106,21 +106,42 @@ android {
     buildTypes {
         debug {
             signingConfig signingConfigs.debug
+            debuggable true
+            minifyEnabled false
+            shrinkResources false
+            // Enable verbose logging for debug builds
+            buildConfigField "boolean", "ENABLE_VERBOSE_LOGGING", "true"
         }
         release {
             // Caution! In production, you need to generate your own keystore file.
             // see https://reactnative.dev/docs/signed-apk-android.
             signingConfig signingConfigs.debug
-            shrinkResources (findProperty('android.enableShrinkResourcesInReleaseBuilds')?.toBoolean() ?: false)
-            minifyEnabled enableProguardInReleaseBuilds
+            debuggable false
+            // Disable resource shrinking to prevent WebRTC crashes
+            shrinkResources false
+            // Disable minification to prevent WebRTC issues in release builds
+            minifyEnabled false
             proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"
             crunchPngs (findProperty('android.enablePngCrunchInReleaseBuilds')?.toBoolean() ?: true)
+            // Disable verbose logging for release builds
+            buildConfigField "boolean", "ENABLE_VERBOSE_LOGGING", "false"
+            
+            // Android release build optimizations
+            matchingFallbacks = ['release', 'debug']
+            
+            // Prevent crashes by ensuring proper compilation
+            consumerProguardFiles 'proguard-rules.pro'
         }
     }
     packagingOptions {
         jniLibs {
             useLegacyPackaging (findProperty('expo.useLegacyPackaging')?.toBoolean() ?: false)
         }
+        // WebRTC specific packaging options to prevent crashes
+        pickFirst '**/libwebrtc.so'
+        pickFirst '**/libjingle_peerconnection_so.so'
+        pickFirst '**/libc++_shared.so'
+        pickFirst '**/libfbjni.so'
     }
     androidResources {
         ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:!CVS:!thumbs.db:!picasa.ini:!*~'

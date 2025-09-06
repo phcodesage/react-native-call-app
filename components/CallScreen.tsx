@@ -281,7 +281,7 @@ export const CallScreen: React.FC<CallScreenProps> = ({
         <View style={[
           styles.messageContainer,
           item.isOwn ? styles.ownMessage : styles.otherMessage
-        ]}> (
+        ]}>
             <FileMessage
               file_id={item.file_id}
               file_name={item.file_name}
@@ -293,7 +293,6 @@ export const CallScreen: React.FC<CallScreenProps> = ({
               isOutgoing={item.isOwn}
               isDark={item.isOwn}
             />
-          )
           {showTimestamps && (
             <Text style={[
               styles.messageTime,

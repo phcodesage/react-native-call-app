@@ -10,6 +10,7 @@ import {
     Alert,
     KeyboardAvoidingView,
     Platform,
+    ScrollView,
     StyleSheet,
     Text,
     TextInput,
@@ -126,10 +127,16 @@ export default function LoginScreen() {
       <KeyboardAvoidingView 
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={styles.keyboardView}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
       >
-        <View style={styles.content}>
-          {/* Header with Theme Toggle */}
-          <View style={styles.header}>
+        <ScrollView 
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+        >
+          <View style={styles.content}>
+            {/* Header with Theme Toggle */}
+            <View style={styles.header}>
             <View style={styles.headerTop}>
               <View style={styles.placeholder} />
               <ThemeToggle />
@@ -142,8 +149,8 @@ export default function LoginScreen() {
             </Text>
           </View>
 
-          {/* Form */}
-          <View style={styles.form}>
+            {/* Form */}
+            <View style={styles.form}>
             {/* Username Input */}
             <View style={styles.inputGroup}>
               <Text style={[styles.label, { color: isDark ? '#e5e7eb' : '#374151' }]}>
@@ -265,8 +272,9 @@ export default function LoginScreen() {
                 </Text>
               </TouchableOpacity>
             </View>
+            </View>
           </View>
-        </View>
+        </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
@@ -283,10 +291,14 @@ const styles = StyleSheet.create({
   keyboardView: {
     flex: 1,
   },
-  content: {
-    flex: 1,
+  scrollContent: {
+    flexGrow: 1,
     justifyContent: 'center',
     paddingHorizontal: 24,
+    paddingVertical: 20,
+  },
+  content: {
+    width: '100%',
   },
   header: {
     alignItems: 'center',

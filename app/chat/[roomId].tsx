@@ -1585,8 +1585,7 @@ export default function ChatScreen() {
             setMessages(baselineMessages);
             // We can stop showing spinner early since UI has content
             setIsLoading(false);
-            // On initial open, ensure we land at bottom of cached list
-            if (isInitialLoadRef.current) scrollToBottom(true);
+            // Don't scroll yet - wait until all messages are loaded
           }
         }
       } catch {}
@@ -1684,6 +1683,12 @@ export default function ChatScreen() {
         console.warn('Failed to cache messages:', e);
       }
 
+      // 6) Now that ALL messages are loaded, scroll to bottom on initial load
+      if (isInitialLoadRef.current) {
+        // Use a longer delay to ensure all messages have rendered
+        setTimeout(() => scrollToBottom(true), 200);
+      }
+
     } catch (error) {
       console.error('Error loading messages:', error);
       // Fallback: show cached if available
@@ -1691,7 +1696,13 @@ export default function ChatScreen() {
         const cached = await AsyncStorage.getItem(`messages_cache_${roomId}`);
         if (cached) {
           const parsed = JSON.parse(cached);
-          if (Array.isArray(parsed)) setMessages((parsed as any[]).map(normalizeMessage));
+          if (Array.isArray(parsed)) {
+            setMessages((parsed as any[]).map(normalizeMessage));
+            // Scroll to bottom for cached messages on error fallback
+            if (isInitialLoadRef.current) {
+              setTimeout(() => scrollToBottom(true), 200);
+            }
+          }
         }
       } catch {}
       setServerWarning('Server unreachable. Showing cached messages.');

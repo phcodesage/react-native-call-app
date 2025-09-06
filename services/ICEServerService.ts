@@ -21,26 +21,43 @@ export class ICEServerService {
     try {
       // Check cache first
       const cachedServers = await this.getCachedServers();
-      if (cachedServers) {
-        console.log('ICEServerService: Using cached ICE servers:', cachedServers.length, 'servers');
-        return cachedServers;
+      if (cachedServers && cachedServers.length > 0) {
+        console.log('[ICE] ICEServerService: Using cached ICE servers:', cachedServers.length, 'servers');
+        // Validate cached servers
+        const validCachedServers = this.validateServers(cachedServers);
+        if (validCachedServers.length > 0) {
+          return validCachedServers;
+        }
+        console.warn('[ICE] ICEServerService: Cached servers are invalid, fetching fresh ones');
       }
 
-      console.log('ICEServerService: Cache miss, fetching from backend');
-      // Fetch from backend
-      const servers = await this.fetchFromBackend(baseUrl);
+      console.log('[ICE] ICEServerService: Cache miss or invalid, fetching from backend');
+      // Fetch from backend with retry logic
+      const servers = await this.fetchFromBackendWithRetry(baseUrl);
       
       if (servers && servers.length > 0) {
-        // Cache the servers
-        await this.cacheServers(servers);
-        console.log('ICEServerService: Successfully fetched and cached ICE servers:', servers.length, 'servers');
-        return servers;
+        // Validate servers before caching
+        const validServers = this.validateServers(servers);
+        if (validServers.length > 0) {
+          // Cache the servers
+          await this.cacheServers(validServers);
+          console.log('[ICE] ICEServerService: Successfully fetched and cached ICE servers:', validServers.length, 'servers');
+          return validServers;
+        }
+        console.error('[ICE] ICEServerService: All fetched servers are invalid');
       }
 
-      throw new Error('No ICE servers received from backend');
+      console.error('[ICE] ICEServerService: No valid ICE servers received from backend');
+      // Return basic STUN servers as fallback for release builds
+      const fallbackServers = this.getFallbackServers();
+      console.warn('[ICE] ICEServerService: Using fallback STUN servers for connectivity');
+      return fallbackServers;
     } catch (error: any) {
-      console.error('ICEServerService: Failed to fetch ICE servers:', error);
-      throw new Error(`ICE server fetch failed: ${error?.message || 'Unknown error'}`);
+      console.error('[ICE] ICEServerService: Failed to fetch ICE servers:', error);
+      // In release builds, don't throw errors - return fallback servers
+      const fallbackServers = this.getFallbackServers();
+      console.warn('[ICE] ICEServerService: Returning fallback servers due to error:', error?.message || 'Unknown error');
+      return fallbackServers;
     }
   }
 
@@ -163,10 +180,81 @@ export class ICEServerService {
   }
 
   static async refreshServers(baseUrl: string): Promise<RTCIceServer[]> {
-    console.log('ICEServerService: Refreshing servers - clearing cache first');
+    console.log('[ICE] ICEServerService: Refreshing servers - clearing cache first');
     await this.clearCache();
     const servers = await this.getICEServers(baseUrl);
-    console.log('ICEServerService: Fresh servers fetched:', servers.length, 'servers');
+    console.log('[ICE] ICEServerService: Fresh servers fetched:', servers.length, 'servers');
     return servers;
+  }
+
+  // Add retry logic for backend fetching
+  private static async fetchFromBackendWithRetry(baseUrl: string, maxRetries = 3): Promise<RTCIceServer[]> {
+    let lastError: Error | null = null;
+    
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        console.log(`[ICE] ICEServerService: Fetch attempt ${attempt}/${maxRetries}`);
+        const servers = await this.fetchFromBackend(baseUrl);
+        console.log(`[ICE] ICEServerService: Fetch attempt ${attempt} successful`);
+        return servers;
+      } catch (error: any) {
+        lastError = error;
+        console.warn(`[ICE] ICEServerService: Fetch attempt ${attempt} failed:`, error.message);
+        
+        if (attempt < maxRetries) {
+          const delay = Math.min(1000 * Math.pow(2, attempt - 1), 5000); // Exponential backoff, max 5s
+          console.log(`[ICE] ICEServerService: Retrying after ${delay}ms...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
+      }
+    }
+    
+    throw lastError || new Error('All fetch attempts failed');
+  }
+
+  // Validate ICE servers to ensure they're properly formatted
+  private static validateServers(servers: RTCIceServer[]): RTCIceServer[] {
+    return servers.filter(server => {
+      if (!server || typeof server !== 'object') {
+        console.warn('[ICE] ICEServerService: Invalid server object:', server);
+        return false;
+      }
+      
+      if (!server.urls) {
+        console.warn('[ICE] ICEServerService: Server missing urls:', server);
+        return false;
+      }
+      
+      // Check if urls is a string or array of strings
+      const urls = Array.isArray(server.urls) ? server.urls : [server.urls];
+      const validUrls = urls.every(url => {
+        if (typeof url !== 'string') return false;
+        return url.startsWith('stun:') || url.startsWith('turn:') || url.startsWith('turns:');
+      });
+      
+      if (!validUrls) {
+        console.warn('[ICE] ICEServerService: Server has invalid URLs:', server.urls);
+        return false;
+      }
+      
+      // For TURN servers, validate credentials
+      if (urls.some(url => url.startsWith('turn'))) {
+        if (!server.username || !server.credential) {
+          console.warn('[ICE] ICEServerService: TURN server missing credentials:', server);
+          return false;
+        }
+      }
+      
+      return true;
+    });
+  }
+
+  // Get fallback STUN servers for basic connectivity
+  private static getFallbackServers(): RTCIceServer[] {
+    return [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: 'stun:stun2.l.google.com:19302' }
+    ];
   }
 }

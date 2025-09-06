@@ -8,6 +8,7 @@ import {
     RTCSessionDescription,
 } from 'react-native-webrtc';
 import { Platform } from 'react-native';
+import { BuildUtils, debugLog, releaseLog, errorLog } from '../utils/buildUtils';
 
 // Define RTCConfiguration interface for react-native-webrtc
 interface RTCConfiguration {
@@ -90,20 +91,49 @@ export class WebRTCService {
 
   async initializeCall(callType: 'audio' | 'video', devices?: CallDevice): Promise<MediaStream> {
     try {
-      // Get ICE servers (STUN/TURN)
-      const iceServers = await this.initializeICEServers();
-      console.log('WebRTCService: Using ICE servers:', iceServers);
+      console.log('[INIT] WebRTCService: Starting call initialization for type:', callType);
+      
+      // Get ICE servers (STUN/TURN) with timeout and error handling
+      let iceServers: RTCIceServer[];
+      try {
+        iceServers = await Promise.race([
+          this.initializeICEServers(),
+          new Promise<never>((_, reject) => 
+            setTimeout(() => reject(new Error('ICE server fetch timeout')), 10000)
+          )
+        ]);
+        console.log('[INIT] WebRTCService: Successfully retrieved ICE servers:', iceServers.length);
+      } catch (iceError) {
+        console.error('[INIT] WebRTCService: ICE server fetch failed:', iceError);
+        // Use fallback STUN servers for basic connectivity
+        iceServers = [{ urls: 'stun:stun.l.google.com:19302' }];
+        console.warn('[INIT] WebRTCService: Using fallback STUN servers');
+      }
 
-      // Create peer connection
-      this.peerConnection = new RTCPeerConnection({
+      // Create peer connection with build-aware configuration
+      const webrtcConfig = BuildUtils.getWebRTCConfig();
+      const rtcConfig = {
         iceServers,
-      }) as ReactNativeRTCPeerConnection;
+        iceTransportPolicy: webrtcConfig.iceTransportPolicy as 'all' | 'relay',
+        bundlePolicy: webrtcConfig.bundlePolicy as 'balanced' | 'max-compat' | 'max-bundle',
+        rtcpMuxPolicy: webrtcConfig.rtcpMuxPolicy as 'negotiate' | 'require'
+      };
+      
+      debugLog('WebRTCService: Creating peer connection with config:', rtcConfig);
+      
+      try {
+        this.peerConnection = new RTCPeerConnection(rtcConfig) as ReactNativeRTCPeerConnection;
+        releaseLog('WebRTCService: PeerConnection created successfully for release build');
+      } catch (pcError) {
+        errorLog('WebRTCService: PeerConnection creation failed', pcError);
+        throw new Error(`Failed to create peer connection: ${pcError}`);
+      }
 
       this.setupPeerConnectionListeners();
 
       // Process any queued ICE candidates now that peer connection is initialized
       if (this.candidateQueue.length > 0) {
-        console.log(`WebRTCService: Processing ${this.candidateQueue.length} ICE candidates queued before peer connection initialization`);
+        console.log(`[INIT] WebRTCService: Processing ${this.candidateQueue.length} ICE candidates queued before peer connection initialization`);
         // Note: We still need to wait for remote description before actually adding them
         // The candidates will be processed when createAnswer/handleAnswer sets the remote description
       }
@@ -111,23 +141,31 @@ export class WebRTCService {
       // Load saved device preferences if no devices specified
       let finalDevices = devices;
       if (!devices) {
-        finalDevices = await this.getDevicePreferences();
+        try {
+          finalDevices = await this.getDevicePreferences();
+          console.log('[INIT] WebRTCService: Loaded device preferences:', finalDevices);
+        } catch (prefError) {
+          console.warn('[INIT] WebRTCService: Failed to load device preferences:', prefError);
+          finalDevices = {};
+        }
       }
 
-      // Get user media with selected devices
-      // On Android, prefer facingMode over deviceId to avoid black preview issues
+      // Get user media with build-aware constraints
       const wantVideo = callType === 'video';
-      // Always honor an explicitly provided deviceId (from setup modal) on all platforms
       const useDeviceIdForVideo = !!finalDevices?.videoDeviceId;
+      // Reuse webrtcConfig from above
+      
       const constraints = {
         audio: finalDevices?.audioDeviceId
           ? { deviceId: { exact: finalDevices.audioDeviceId } }
           : {
               channelCount: 2,
               sampleRate: 48000,
-              echoCancellation: false,
-              noiseSuppression: false,
-              autoGainControl: false,
+              echoCancellation: webrtcConfig.enableEchoCancellation,
+              noiseSuppression: webrtcConfig.enableNoiseSuppression,
+              autoGainControl: webrtcConfig.enableAutoGainControl,
+              ...(webrtcConfig.enableHighpassFilter && { googHighpassFilter: true }),
+              ...(webrtcConfig.enableDtx && { googDtx: true }),
             },
         video: wantVideo
           ? useDeviceIdForVideo
@@ -142,30 +180,84 @@ export class WebRTCService {
           : false,
       } as const;
 
-      this.localStream = await mediaDevices.getUserMedia(constraints);
+      console.log('[INIT] WebRTCService: Requesting user media with constraints:', constraints);
       
-      // Attach local tracks to peer connection (modern API)
+      try {
+        this.localStream = await mediaDevices.getUserMedia(constraints);
+        console.log('[INIT] WebRTCService: Got local stream with tracks:', 
+          this.localStream.getTracks().map(t => ({ kind: t.kind, enabled: t.enabled })));
+      } catch (mediaError) {
+        console.error('[INIT] WebRTCService: getUserMedia failed:', mediaError);
+        // Try with basic constraints as fallback
+        try {
+          const fallbackConstraints = {
+            audio: true,
+            video: wantVideo ? { facingMode: 'user' } : false
+          };
+          console.log('[INIT] WebRTCService: Retrying with fallback constraints:', fallbackConstraints);
+          this.localStream = await mediaDevices.getUserMedia(fallbackConstraints);
+          console.log('[INIT] WebRTCService: Fallback media request successful');
+        } catch (fallbackError) {
+          console.error('[INIT] WebRTCService: Fallback media request also failed:', fallbackError);
+          const errorMessage = mediaError instanceof Error ? mediaError.message : String(mediaError);
+          throw new Error(`Media access failed: ${errorMessage}`);
+        }
+      }
+      
+      // Attach local tracks to peer connection (modern API) with error handling
       if (this.peerConnection && this.localStream) {
-        const pc = this.peerConnection!;
-        const ls = this.localStream!;
+        const pc = this.peerConnection;
+        const ls = this.localStream;
+        let tracksAdded = 0;
+        
         ls.getTracks().forEach((track: any) => {
           try {
             pc.addTrack(track, ls as any);
-          } catch (e) {
-            console.warn('WebRTCService: addTrack failed for track', track?.kind, e);
+            tracksAdded++;
+            console.log('[INIT] WebRTCService: Added track:', track.kind, 'enabled:', track.enabled);
+          } catch (trackError) {
+            console.error('[INIT] WebRTCService: addTrack failed for track', track?.kind, trackError);
+            throw new Error(`Failed to add ${track?.kind} track: ${trackError}`);
           }
         });
+        
+        console.log('[INIT] WebRTCService: Successfully added', tracksAdded, 'tracks to peer connection');
       }
 
       // Save device preferences if provided
       if (devices) {
-        await this.saveDevicePreferences(devices);
+        try {
+          await this.saveDevicePreferences(devices);
+          console.log('[INIT] WebRTCService: Saved device preferences');
+        } catch (saveError) {
+          console.warn('[INIT] WebRTCService: Failed to save device preferences:', saveError);
+        }
       }
 
       this.onLocalStream?.(this.localStream);
+      console.log('[INIT] WebRTCService: Call initialization completed successfully');
       return this.localStream;
     } catch (error) {
-      console.error('Error initializing call:', error);
+      console.error('[INIT] WebRTCService: Call initialization failed:', error);
+      // Cleanup on failure
+      if (this.localStream) {
+        this.localStream.getTracks().forEach(track => {
+          try {
+            track.stop();
+          } catch (stopError) {
+            console.warn('[INIT] Cleanup: Failed to stop track:', stopError);
+          }
+        });
+        this.localStream = null;
+      }
+      if (this.peerConnection) {
+        try {
+          this.peerConnection.close();
+        } catch (closeError) {
+          console.warn('[INIT] Cleanup: Failed to close peer connection:', closeError);
+        }
+        this.peerConnection = null;
+      }
       throw error;
     }
   }
@@ -381,6 +473,12 @@ export class WebRTCService {
   }
 
   async addIceCandidate(candidate: RTCIceCandidate): Promise<void> {
+    // Validate candidate before processing
+    if (!candidate) {
+      console.warn('[ICE] WebRTCService: Invalid ICE candidate received (null/undefined)');
+      return;
+    }
+    
     // Queue ICE candidates if peer connection is not initialized, remote description is not set, or we're processing remote description
     if (!this.peerConnection || !this.remoteDescriptionSet || this.processingRemoteDescription) {
       const reason = !this.peerConnection 
@@ -388,20 +486,50 @@ export class WebRTCService {
         : !this.remoteDescriptionSet 
         ? 'remote description not set yet'
         : 'processing remote description';
-      console.log(`WebRTCService: Queueing ICE candidate (${reason}):`, candidate.candidate);
+      console.log(`[ICE] WebRTCService: Queueing ICE candidate (${reason}):`, candidate.candidate?.substring(0, 50) + '...');
+      
+      // Prevent queue overflow in case of issues
+      if (this.candidateQueue.length > 50) {
+        console.warn('[ICE] WebRTCService: ICE candidate queue is getting large, removing oldest');
+        this.candidateQueue.shift();
+      }
+      
       this.candidateQueue.push(candidate);
       return;
     }
 
-    try {
-      await this.peerConnection.addIceCandidate(candidate);
-      console.log('WebRTCService: Added ICE candidate immediately:', {
-        candidate: candidate.candidate,
-        sdpMLineIndex: candidate.sdpMLineIndex,
-        sdpMid: candidate.sdpMid,
-      });
-    } catch (error) {
-      console.error('WebRTCService: Error adding ICE candidate:', error);
+    // Add candidate immediately with comprehensive error handling
+    const maxRetries = 3;
+    let retryCount = 0;
+    
+    while (retryCount <= maxRetries) {
+      try {
+        await this.peerConnection.addIceCandidate(candidate);
+        console.log('[ICE] WebRTCService: Added ICE candidate successfully:', {
+          candidate: candidate.candidate?.substring(0, 50) + '...',
+          sdpMLineIndex: candidate.sdpMLineIndex,
+          sdpMid: candidate.sdpMid,
+          retryCount
+        });
+        return; // Success, exit retry loop
+      } catch (error: any) {
+        retryCount++;
+        console.error(`[ICE] WebRTCService: Error adding ICE candidate (attempt ${retryCount}/${maxRetries + 1}):`, {
+          error: error.message || error,
+          candidate: candidate.candidate?.substring(0, 50) + '...',
+          connectionState: this.peerConnection.iceConnectionState,
+          signalingState: this.peerConnection.signalingState
+        });
+        
+        // If this is the last retry, log and continue (don't throw)
+        if (retryCount > maxRetries) {
+          console.error('[ICE] WebRTCService: Failed to add ICE candidate after all retries, continuing anyway');
+          return;
+        }
+        
+        // Wait a bit before retrying
+        await new Promise(resolve => setTimeout(resolve, 100 * retryCount));
+      }
     }
   }
 
