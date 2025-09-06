@@ -15,6 +15,7 @@ interface Contact {
   id: string;
   username: string;
   online: boolean;
+  lastSeen?: string;
   lastMessage?: string;
   lastMessageTime?: string;
   unreadCount?: number;
@@ -44,6 +45,90 @@ export default function HomeScreen() {
     if (typeof text === 'string') return text.trim();
     if (typeof text === 'number') return String(text);
     return String(text).trim();
+  };
+
+  // Format relative time for "last seen" display
+  const formatRelativeTime = (lastSeenInput?: string): string => {
+    try {
+      if (!lastSeenInput) return '';
+      const now = Date.now();
+      const str = String(lastSeenInput);
+      const last = new Date(str + (str.endsWith('Z') ? '' : 'Z')).getTime();
+      const diffSec = Math.max(0, Math.floor((now - last) / 1000));
+      const minutes = Math.floor(diffSec / 60);
+      if (minutes < 1) return 'just now';
+      if (minutes < 60) return `${minutes} minute${minutes === 1 ? '' : 's'} ago`;
+      const hours = Math.floor(minutes / 60);
+      if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
+      const days = Math.floor(hours / 24);
+      return `${days} day${days === 1 ? '' : 's'} ago`;
+    } catch {
+      return '';
+    }
+  };
+
+  // Determine user status type based on online status and last seen time
+  const getStatusType = (contact: Contact): 'online' | 'inactive' | 'away' | 'offline' => {
+    try {
+      // 1) Online wins
+      if (contact.online) {
+        return 'online';
+      }
+
+      if (contact.lastSeen) {
+        // Both timestamps are UTC - direct comparison
+        const now = Date.now();
+        const lastSeenStr = String(contact.lastSeen);
+        const lastSeen = new Date(lastSeenStr + (lastSeenStr.endsWith('Z') ? '' : 'Z')).getTime();
+        const diffMinutes = (now - lastSeen) / (1000 * 60);
+
+        // Inactive: < 5 minutes since last seen
+        if (diffMinutes >= 0 && diffMinutes < 5) {
+          return 'inactive';
+        }
+        // Away: >= 5 minutes
+        if (diffMinutes >= 5) {
+          return 'away';
+        }
+      }
+
+      // Default fallback (no last_seen) — treat as Away rather than Offline
+      return 'away';
+    } catch {
+      return 'away';
+    }
+  };
+
+  // Get status indicator color based on status type
+  const getStatusColor = (statusType: 'online' | 'inactive' | 'away' | 'offline'): string => {
+    switch (statusType) {
+      case 'online': return '#10b981'; // green
+      case 'inactive': return '#f59e0b'; // yellow
+      case 'away': return '#f97316'; // orange
+      case 'offline': return '#6b7280'; // gray
+      default: return '#6b7280';
+    }
+  };
+
+  // Get status text for display
+  const getStatusText = (contact: Contact): string => {
+    const statusType = getStatusType(contact);
+    switch (statusType) {
+      case 'online': return 'Online';
+      case 'inactive': {
+        const relTime = formatRelativeTime(contact.lastSeen);
+        return relTime ? `Last seen ${relTime}` : 'Inactive';
+      }
+      case 'away': {
+        const relTime = formatRelativeTime(contact.lastSeen);
+        return relTime ? `Last seen ${relTime}` : 'Away';
+      }
+      case 'offline': {
+        const relTime = formatRelativeTime(contact.lastSeen);
+        return relTime ? `Last seen ${relTime}` : 'Offline';
+      }
+      default: return 'Offline';
+    }
   };
 
   useEffect(() => {
@@ -304,8 +389,8 @@ export default function HomeScreen() {
 
       const unreadCounts = await fetchUnreadCounts();
 
-      // Transform users into contacts with latest message info and unread counts
-      const transformedContacts = usersData.map((username: string) => {
+      // Transform filtered users (excluding current user) into contacts with latest message info and unread counts
+      const transformedContacts = otherUsers.map((username: string) => {
         const roomId = [user?.username, username].sort().join('-');
         const latestMessage = latestMessages[roomId];
         
@@ -442,13 +527,20 @@ export default function HomeScreen() {
     const lastMessage = safeText(contact.lastMessage);
     const lastMessageTime = safeText(contact.lastMessageTime);
     
+    // Get enhanced status information
+    const statusType = getStatusType(contact);
+    const statusColor = getStatusColor(statusType);
+    const statusText = getStatusText(contact);
+    
     // Debug logging for NaN issue
     if (contact.username === 'admin') {
       console.log(`[DEBUG] Admin contact data:`, {
         username: contact.username,
         lastMessageTime: contact.lastMessageTime,
         safeLastMessageTime: lastMessageTime,
-        unreadCount: contact.unreadCount
+        unreadCount: contact.unreadCount,
+        statusType,
+        statusText
       });
     }
     
@@ -477,21 +569,31 @@ export default function HomeScreen() {
             </Text>
             <View style={[
               styles.statusIndicator,
-              { backgroundColor: contact.online ? '#10b981' : '#6b7280' }
+              { backgroundColor: statusColor }
             ]} />
           </View>
           
           <View style={styles.contactInfo}>
             <View style={styles.contactHeader}>
-              <Text style={[
-                styles.contactName,
-                {
-                  color: isSelected ? '#ffffff' : (isDark ? '#ffffff' : '#1f2937'),
-                  fontWeight: contact.unreadCount && contact.unreadCount > 0 ? '600' : '500'
-                }
-              ]}>
-                {username}
-              </Text>
+              <View style={styles.contactNameRow}>
+                <Text style={[
+                  styles.contactName,
+                  {
+                    color: isSelected ? '#ffffff' : (isDark ? '#ffffff' : '#1f2937'),
+                    fontWeight: contact.unreadCount && contact.unreadCount > 0 ? '600' : '500'
+                  }
+                ]}>
+                  {username}
+                </Text>
+                <Text style={[
+                  styles.statusText,
+                  {
+                    color: isSelected ? '#e5e7eb' : (isDark ? '#9ca3af' : '#6b7280')
+                  }
+                ]}>
+                  {statusText}
+                </Text>
+              </View>
               <View style={styles.contactMeta}>
                 {lastMessageTime.length > 0 ? (
                   <Text style={[
@@ -831,13 +933,21 @@ const styles = StyleSheet.create({
   contactHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     marginBottom: 4,
+  },
+  contactNameRow: {
+    flex: 1,
+    flexDirection: 'column',
   },
   contactName: {
     fontSize: 16,
     fontWeight: '500',
-    flex: 1,
+    marginBottom: 2,
+  },
+  statusText: {
+    fontSize: 12,
+    opacity: 0.8,
   },
   contactMeta: {
     flexDirection: 'row',

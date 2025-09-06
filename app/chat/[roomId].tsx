@@ -1467,8 +1467,8 @@ export default function ChatScreen() {
     console.log('[reactions][send] optimistic add', { messageId, emoji, user: user.username });
     setMessages(prev => prev.map(m => (m.message_id === messageId ? { ...m, reactions: addUserReactionLocal(m.reactions, emoji, user.username!) } : m)));
     try {
-      console.log('[reactions][send] POST /send_reaction');
-      const resp = await fetch(getApiUrl('/send_reaction'), {
+      console.log('[reactions][send] POST /react_message');
+      const resp = await fetch(getApiUrl('/react_message'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -2089,30 +2089,31 @@ export default function ChatScreen() {
             </Text>
           )}
 
-          <View style={[styles.bubbleRow, isOutgoing ? styles.bubbleRowOutgoing : styles.bubbleRowIncoming]}>
-            <TouchableOpacity
-              activeOpacity={0.9}
-              style={[
-                styles.messageBubble, 
-                isOutgoing ? styles.myMessageBubble : styles.otherMessageBubble,
-                // Apply 90% width specifically for audio messages
-                (item.type === 'audio' || (item.type === 'file' && ((item.file_type || '').trim().toLowerCase().startsWith('audio/') || (item.file_url || '').trim().toLowerCase().startsWith('data:audio/')))) && styles.audioMessageBubble
-              ]}
-              ref={(r) => {
-                if (r) messageRefs.current.set(item.message_id, r);
-              }}
-              onPress={() => {
-                if (item.type === 'text') {
-                  // Toggle status text display for outgoing messages
-                  if (isOutgoing) {
-                    setShowStatusTextForId(prev => prev === item.message_id ? null : item.message_id);
+          <View style={{ flexDirection: 'column', alignItems: isOutgoing ? 'flex-end' : 'flex-start' }}>
+            <View style={[styles.bubbleRow, isOutgoing ? styles.bubbleRowOutgoing : styles.bubbleRowIncoming]}>
+              <TouchableOpacity
+                activeOpacity={0.9}
+                style={[
+                  styles.messageBubble, 
+                  isOutgoing ? styles.myMessageBubble : styles.otherMessageBubble,
+                  // Apply 90% width specifically for audio messages
+                  (item.type === 'audio' || (item.type === 'file' && ((item.file_type || '').trim().toLowerCase().startsWith('audio/') || (item.file_url || '').trim().toLowerCase().startsWith('data:audio/')))) && styles.audioMessageBubble
+                ]}
+                ref={(r) => {
+                  if (r) messageRefs.current.set(item.message_id, r);
+                }}
+                onPress={() => {
+                  if (item.type === 'text') {
+                    // Toggle status text display for outgoing messages
+                    if (isOutgoing) {
+                      setShowStatusTextForId(prev => prev === item.message_id ? null : item.message_id);
+                    } else {
+                      toggleTranslateTarget(item.message_id);
+                    }
                   } else {
                     toggleTranslateTarget(item.message_id);
                   }
-                } else {
-                  toggleTranslateTarget(item.message_id);
-                }
-              }}
+                }}
               onLongPress={() => openContextMenu(item)}
               delayLongPress={250}
             >
@@ -2224,9 +2225,25 @@ export default function ChatScreen() {
                   />
                 </View>
               )}
-          </TouchableOpacity>
-          {reactions.length > 0 && (
-            <View style={[styles.reactionsContainer]}> 
+            </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.reactionButton}
+                onPress={() => openReactionForMessage(item.message_id, isOutgoing)}
+              >
+                <Ionicons name="happy-outline" size={22} color="#888" />
+              </TouchableOpacity>
+            </View>
+            
+            {/* Reactions positioned below the message bubble */}
+            {reactions.length > 0 && (
+              <View style={[
+                styles.reactionsContainer, 
+                { 
+                  alignSelf: isOutgoing ? 'flex-end' : 'flex-start',
+                  width: '50%',
+                  marginTop: 4
+                }
+              ]}> 
               {reactions.map(([emoji, users]) => {
                 const youReacted = user?.username ? (users as string[]).includes(user.username) : false;
                 return (
@@ -2241,16 +2258,9 @@ export default function ChatScreen() {
                   </TouchableOpacity>
                 );
               })}
-            </View>
-          )}
-          <TouchableOpacity
-            style={styles.reactionButton}
-            onPress={() => openReactionForMessage(item.message_id, isOutgoing)}
-          >
-            <Ionicons name="happy-outline" size={22} color="#888" />
-          </TouchableOpacity>
-        </View>
-
+              </View>
+            )}
+          </View>
 
           {showTimestamps && (
             <Text style={[styles.timestamp, { color: '#ec4899', alignSelf: isOutgoing ? 'flex-end' : 'flex-start' }]}>
