@@ -79,6 +79,10 @@ interface CallScreenProps {
   showTimestamps?: boolean;
   onResetBgColor?: () => void;
   onApplyBgColor?: (color: string | null) => void;
+  // Socket reference for call chat color events
+  socketRef?: React.RefObject<any>;
+  // Current user info for filtering events
+  currentUser?: string;
 }
 
 export const CallScreen: React.FC<CallScreenProps> = ({
@@ -108,6 +112,8 @@ export const CallScreen: React.FC<CallScreenProps> = ({
   showTimestamps,
   onResetBgColor,
   onApplyBgColor,
+  socketRef,
+  currentUser,
 }) => {
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
@@ -216,6 +222,45 @@ export const CallScreen: React.FC<CallScreenProps> = ({
       setUnreadCount(messages.length - lastSeenCountRef.current);
     }
   }, [messages, chatVisible]);
+
+  // Listen for call chat color change events
+  useEffect(() => {
+    if (!socketRef?.current || !currentUser) return;
+
+    const handleCallColorChange = (data: any) => {
+      try {
+        if (!data || !data.from || !data.color) return;
+        // Only apply color changes from other users (not our own)
+        if (data.from === currentUser) return;
+        
+        console.log('[CALL_CHAT] Received color change:', data.color);
+        setCallChatBgColor(data.color);
+      } catch (e) {
+        console.error('[CALL_CHAT] Error handling color change:', e);
+      }
+    };
+
+    const handleCallColorReset = (data: any) => {
+      try {
+        if (!data || !data.from) return;
+        // Only apply reset from other users (not our own)
+        if (data.from === currentUser) return;
+        
+        console.log('[CALL_CHAT] Received color reset');
+        setCallChatBgColor(null);
+      } catch (e) {
+        console.error('[CALL_CHAT] Error handling color reset:', e);
+      }
+    };
+
+    socketRef.current.on('receive_color', handleCallColorChange);
+    socketRef.current.on('receive_reset_bg_color', handleCallColorReset);
+
+    return () => {
+      socketRef.current?.off('receive_color', handleCallColorChange);
+      socketRef.current?.off('receive_reset_bg_color', handleCallColorReset);
+    };
+  }, [socketRef, currentUser]);
 
   // Floating live message toasts removed; messages only in chat overlay
 
@@ -445,8 +490,8 @@ export const CallScreen: React.FC<CallScreenProps> = ({
                 }),
               },
             ],
-            // Make overlay background solid
-            backgroundColor: '#000000',
+            // Apply call chat background color or default
+            backgroundColor: callChatBgColor || '#000000',
           },
         ]}
       >

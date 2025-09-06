@@ -3677,6 +3677,8 @@ export default function ChatScreen() {
             onOpenChangeColor={() => setShowColorPicker((v) => !v)}
             onToggleTimestamps={() => setShowTimestamps((v) => !v)}
             showTimestamps={showTimestamps}
+            socketRef={socketRef}
+            currentUser={user?.username}
           />
         </Modal>
       )}
